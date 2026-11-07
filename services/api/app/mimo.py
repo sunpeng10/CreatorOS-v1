@@ -27,7 +27,8 @@ class MiMoClient:
         self.reasoning_model = os.getenv("MIMO_MODEL_REASONING", "mimo-v2.6-pro")
         self.input_price = float(os.getenv("MIMO_INPUT_PRICE_PER_MILLION", "1"))
         self.output_price = float(os.getenv("MIMO_OUTPUT_PRICE_PER_MILLION", "4"))
-        self.max_task_cost = float(os.getenv("MIMO_MAX_TASK_COST", "1"))
+        # The per-task cap is chosen by the user; an old local setting must not silently lower it.
+        self.max_task_cost = 10.0
         self.timeout = float(os.getenv("MIMO_TIMEOUT_SECONDS", "90"))
         self.transport, self.sleep = transport, sleep
 

@@ -26,6 +26,7 @@ class ContentBody(BaseModel):
     text: str = Field(default='', max_length=200000)
     kind: str = Field(default='text', pattern='^(text|image|album|video)$')
     account_id: str | None = None
+    account_name: str = Field(default='', max_length=200)
     platform: str = Field(default='未指定', max_length=80)
     category: str = Field(default='未分类', max_length=100)
     author: str = Field(default='', max_length=200)
@@ -35,6 +36,17 @@ class ContentBody(BaseModel):
 
 class DeletionRequest(BaseModel):
     reason: str = Field(default='', max_length=3000)
+
+
+@router.get('/content-options')
+def content_options(user: User = Depends(current_user), db: Session = Depends(get_db)):
+    categories = set()
+    for model in (ContentItem, CreatorAccount):
+        for item in db.scalars(select(model).where(model.organization_id == user.organization_id)):
+            category = (item.data or {}).get('category')
+            if isinstance(category, str) and category.strip() not in {'', '未分类'}:
+                categories.add(category.strip())
+    return {'categories': sorted(categories)}
 
 
 def checked_title(db, title, organization_id):
@@ -84,7 +96,7 @@ def get_content(identifier: str, user: User = Depends(current_user), db: Session
 
 
 @router.post('/assets/upload')
-def upload(files: list[UploadFile] = File(...), title: str = Form(...), text: str = Form(''), platform: str = Form('未指定'), category: str = Form('未分类'), account_id: str | None = Form(None), author: str = Form(''), published_at: str = Form(''), statistics: str = Form('{}'), user: User = Depends(current_user), db: Session = Depends(get_db)):
+def upload(files: list[UploadFile] = File(...), title: str = Form(...), text: str = Form(''), platform: str = Form('未指定'), category: str = Form('未分类'), account_id: str | None = Form(None), account_name: str = Form('', max_length=200), author: str = Form(''), published_at: str = Form(''), statistics: str = Form('{}'), user: User = Depends(current_user), db: Session = Depends(get_db)):
     import json
     if not title.strip() or len(title) > 300 or len(text) > 200000 or not 1 <= len(files) <= 12:
         raise HTTPException(422, '请填写标题，文本不超过 20 万字符，一次上传 1–12 个文件')
@@ -102,7 +114,7 @@ def upload(files: list[UploadFile] = File(...), title: str = Form(...), text: st
     folder.mkdir(parents=True, exist_ok=True)
     created_paths = []
     total = 0
-    item = ContentItem(organization_id=user.organization_id, title=title.strip(), text=text, kind='text', account_id=account_id or None, data={'platform': platform, 'category': category, 'author': author, 'published_at': published_at, 'statistics': stats, 'analysis_status': '本地基础分析'})
+    item = ContentItem(organization_id=user.organization_id, title=title.strip(), text=text, kind='text', account_id=account_id or None, data={'platform': platform, 'category': category, 'account_name': account_name, 'author': author, 'published_at': published_at, 'statistics': stats, 'analysis_status': '本地基础分析'})
     add_content(db, item)
     metadata_list = []
     try:
@@ -174,12 +186,22 @@ def asset(identifier: str, download: bool = False, user: User = Depends(current_
 def dashboard(user: User = Depends(current_user), db: Session = Depends(get_db)):
     def rows(model):
         return list(db.scalars(select(model).where(model.organization_id == user.organization_id).order_by(model.created_at.desc())))
-    analyses, accounts, works = rows(ContentAnalysis), rows(CreatorAccount), rows(ContentItem)
+    analyses = [item for item in rows(ContentAnalysis) if not (item.data or {}).get('deleted_at')]
+    accounts, works = rows(CreatorAccount), rows(ContentItem)
     orders = list(db.scalars(select(Order).where(or_(Order.organization_id == user.organization_id, Order.data['customer_organization_id'].as_string() == user.organization_id)).order_by(Order.created_at.desc())))
     orders = [order for order in orders if not is_demo_record(order) and customer_for(db, order) and (user.role == 'OWNER_ADMIN' and order.organization_id == user.organization_id or customer_for(db, order).id == user.id)]
-    running_experiments = db.scalar(select(func.count()).select_from(Experiment).where(Experiment.organization_id == user.organization_id, Experiment.status.in_(['PLANNED', 'RUNNING'])))
+    running_experiments = [item for item in rows(Experiment) if item.status in {'PLANNED', 'RUNNING'}]
     titles = {item.id: item.title for item in works}
-    return {'counts': {'contents': len(works), 'analyses': len(analyses), 'orders': len(orders), 'accounts': len(accounts), 'experiments': running_experiments}, 'analyses': [{**serialize(x), 'content_title': titles.get(x.content_id)} for x in analyses[:6]], 'orders': [serialize(x) for x in orders[:5]], 'accounts': [serialize(x) for x in accounts], 'contents': [serialize(x) for x in works[:6]], 'source': '当前工作区真实录入数据；服务订单按注册客户关联展示'}
+    latest_analysis = {}
+    for item in analyses:
+        latest_analysis.setdefault(item.content_id, item.id)
+    details = {
+        'contents': [{'id': item.id, 'title': item.title, 'platform': (item.data or {}).get('platform'), 'category': (item.data or {}).get('category'), 'kind': item.kind, 'created_at': item.created_at, 'analysis_id': latest_analysis.get(item.id)} for item in works],
+        'analyses': [{'id': item.id, 'content_title': titles.get(item.content_id), 'status': item.status, 'mode': item.mode, 'created_at': item.created_at} for item in analyses],
+        'accounts': [{'id': item.id, 'name': item.name, 'platform': item.platform, 'category': (item.data or {}).get('category'), 'created_at': item.created_at} for item in accounts],
+        'experiments': [{'id': item.id, 'title': item.title, 'status': item.status, 'created_at': item.created_at} for item in running_experiments],
+    }
+    return {'counts': {'contents': len(works), 'analyses': len(analyses), 'orders': len(orders), 'accounts': len(accounts), 'experiments': len(running_experiments)}, 'analyses': [{**serialize(x), 'content_title': titles.get(x.content_id)} for x in analyses[:6]], 'orders': [serialize(x) for x in orders[:5]], 'accounts': [serialize(x) for x in accounts], 'contents': [serialize(x) for x in works[:6]], 'details': details, 'source': '当前工作区真实录入数据；服务订单按注册客户关联展示'}
 
 
 @router.get('/settings/export')

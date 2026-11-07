@@ -1,5 +1,6 @@
 "use client";
 import Link from "next/link";
+import { useState } from "react";
 import {
   ArrowRight,
   BookOpen,
@@ -11,22 +12,34 @@ import {
   Users,
 } from "lucide-react";
 import { rows, useResource } from "@/lib/api";
-import { analysisLabel, dateLabel, formatMetric } from "@/lib/format";
+import { analysisLabel, dateLabel, formatMetric, label } from "@/lib/format";
 import {
   Card,
+  Badge,
   Empty,
   LinkButton,
   Loading,
+  Modal,
   Notice,
   PageHeading,
   Stat,
   Status,
 } from "../ui";
 export default function Dashboard() {
-  const r = useResource("/dashboard");
+  const r = useResource("/dashboard", 15000);
+  const [detail, setDetail] = useState<
+    "contents" | "analyses" | "accounts" | "experiments" | null
+  >(null);
   if (r.loading) return <Loading />;
   const d = r.data || {},
     counts = d.counts || {};
+  const detailNames = {
+    contents: "研究作品",
+    analyses: "分析报告",
+    accounts: "创作账号",
+    experiments: "进行中的实验",
+  };
+  const detailItems = detail ? rows(d.details?.[detail]) : [];
   return (
     <>
       <PageHeading
@@ -47,24 +60,28 @@ export default function Dashboard() {
           value={formatMetric(counts.contents ?? 0)}
           detail="工作区已提交内容"
           icon={<FileText size={18} />}
+          onClick={() => setDetail("contents")}
         />
         <Stat
           label="分析报告"
           value={formatMetric(counts.analyses ?? 0)}
           detail="保留结论与来源证据"
           icon={<ScanText size={18} />}
+          onClick={() => setDetail("analyses")}
         />
         <Stat
           label="创作账号"
           value={formatMetric(counts.accounts ?? rows(d.accounts).length)}
           detail="持续积累账号画像"
           icon={<Users size={18} />}
+          onClick={() => setDetail("accounts")}
         />
         <Stat
           label="进行中的实验"
           value={formatMetric(counts.experiments ?? 0)}
           detail="让下一次修改可追踪"
           icon={<FlaskConical size={18} />}
+          onClick={() => setDetail("experiments")}
         />
       </div>
       <section className="workspace-banner">
@@ -200,6 +217,61 @@ export default function Dashboard() {
           </div>
         )}
       </Card>
+      {detail && (
+        <Modal
+          title={`${detailNames[detail]} · ${detailItems.length} 条`}
+          className="overview-modal"
+          close={() => setDetail(null)}
+        >
+          <div
+            className="overview-list"
+            tabIndex={0}
+            aria-label={`${detailNames[detail]}明细列表`}
+          >
+            {detailItems.length ? (
+              detailItems.map((item) => {
+                const href =
+                  detail === "analyses"
+                    ? `/analyses/${item.id}`
+                    : detail === "contents"
+                      ? item.analysis_id
+                        ? `/analyses/${item.analysis_id}`
+                        : "/analyze"
+                      : detail === "accounts"
+                        ? "/accounts"
+                        : "/experiments";
+                return (
+                  <Link key={item.id} href={href} className="overview-item">
+                    <div className="grow">
+                      <h3>
+                        {detail === "analyses"
+                          ? analysisLabel(item)
+                          : item.title || item.name}
+                      </h3>
+                      <p>
+                        {detail === "analyses"
+                          ? `${dateLabel(item.created_at)} · ${label(item.mode)}`
+                          : detail === "experiments"
+                            ? dateLabel(item.created_at)
+                            : `${item.platform || "未指定平台"} · ${item.category || "未分类"} · ${dateLabel(item.created_at)}`}
+                      </p>
+                    </div>
+                    {item.status ? (
+                      <Status value={item.status} />
+                    ) : (
+                      <Badge>
+                        {detail === "contents" ? "研究作品" : "账号档案"}
+                      </Badge>
+                    )}
+                  </Link>
+                );
+              })
+            ) : (
+              <Empty title={`暂无${detailNames[detail]}`} />
+            )}
+          </div>
+        </Modal>
+      )}
     </>
   );
 }

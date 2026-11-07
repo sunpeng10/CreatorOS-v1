@@ -8,6 +8,8 @@ import {
   Download,
   FileText,
   ImageIcon,
+  MoreHorizontal,
+  ChevronDown,
   Plus,
   Printer,
   RefreshCw,
@@ -28,14 +30,18 @@ import {
   Badge,
   Button,
   Card,
+  DataForm,
   Empty,
   Field,
   JsonDetails,
   Loading,
+  Modal,
   Notice,
   PageHeading,
   Status,
 } from "../ui";
+import { ChineseDateInput, EditableChoice } from "../ContentFields";
+import { CONTENT_CATEGORIES, CONTENT_PLATFORMS } from "@/lib/content-options";
 
 function UploadPreview({ file, name }: { file: File; name: string }) {
   const image = /\.(jpe?g|png|webp)$/i.test(file.name);
@@ -86,15 +92,71 @@ function UploadPreview({ file, name }: { file: File; name: string }) {
 
 export function Analyze() {
   const router = useRouter();
-  const history = useResource("/analyses"),
+  const [historyOffset, setHistoryOffset] = useState(0);
+  const history = useResource(`/analyses?limit=30&offset=${historyOffset}`),
     accounts = useResource("/accounts"),
+    contentOptions = useResource("/content-options"),
     ai = useResource("/system/ai-status");
   const [files, setFiles] = useState<File[]>([]),
     [title, setTitle] = useState(""),
+    [accountName, setAccountName] = useState(""),
     [busy, setBusy] = useState(false),
     [error, setError] = useState(""),
     [mode, setMode] = useState("local"),
     [consent, setConsent] = useState(false);
+  const [menuId, setMenuId] = useState<string | null>(null);
+  const [historyAction, setHistoryAction] = useState<{
+    kind: "delete" | "note" | "share";
+    item: Row;
+  } | null>(null);
+  const [historyBusy, setHistoryBusy] = useState(false),
+    [historyError, setHistoryError] = useState("");
+  const categoryOptions = [
+    ...new Set([
+      ...CONTENT_CATEGORIES,
+      ...(contentOptions.data?.categories || []),
+    ]),
+  ].filter((value) => value !== "其他");
+  async function deleteHistory(item: Row) {
+    setHistoryBusy(true);
+    setHistoryError("");
+    try {
+      await post(`/analyses/${item.id}`, undefined, "DELETE");
+      setHistoryAction(null);
+      if (rows(history.data).length === 1 && historyOffset > 0)
+        setHistoryOffset(Math.max(0, historyOffset - 30));
+      else await history.refresh();
+    } catch (error) {
+      setHistoryError((error as Error).message);
+    } finally {
+      setHistoryBusy(false);
+    }
+  }
+  async function shareHistory(item: Row) {
+    setHistoryBusy(true);
+    setHistoryError("");
+    try {
+      const response = await fetch(
+        `/api/analyses/${item.id}/export?format=markdown`,
+        { credentials: "same-origin", cache: "no-store" },
+      );
+      if (!response.ok)
+        throw new Error("暂时无法导出，请确认分析已完成后再试。");
+      const url = URL.createObjectURL(await response.blob());
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = `${analysisLabel(item).replace(/[<>:"/\\|?*]/g, "_")}.md`;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+      setHistoryAction(null);
+    } catch (error) {
+      setHistoryError((error as Error).message);
+    } finally {
+      setHistoryBusy(false);
+    }
+  }
   const fileNames = files.map(
     (file, index) =>
       `${title.trim() || "待命名作品"} · 素材 ${index + 1}${file.name.match(/\.[^.]+$/)?.[0].toLowerCase() || ""}`,
@@ -119,6 +181,25 @@ export function Analyze() {
                 return;
               }
               form.set("title", title.trim());
+              const name =
+                accountName.trim() === "暂不关联" ? "" : accountName.trim();
+              const matches = rows(accounts.data).filter(
+                (item) =>
+                  item.name === name ||
+                  item.id === name ||
+                  `${item.name} · ${item.platform}` === name,
+              );
+              const account = matches.length === 1 ? matches[0] : undefined;
+              form.set("account_id", account?.id || "");
+              form.set("account_name", account?.name || name);
+              form.set(
+                "platform",
+                String(form.get("platform") || "").trim() || "未指定",
+              );
+              form.set(
+                "category",
+                String(form.get("category") || "").trim() || "未分类",
+              );
               const validation = validateFiles(files);
               if (validation) {
                 setError(validation);
@@ -143,6 +224,7 @@ export function Analyze() {
                     platform: form.get("platform"),
                     category: form.get("category"),
                     account_id: form.get("account_id") || null,
+                    account_name: form.get("account_name"),
                     author: form.get("author"),
                     published_at: form.get("published_at"),
                   });
@@ -235,48 +317,48 @@ export function Analyze() {
                 ))}
               </div>
             )}
-            <div className="form-grid">
-              <Field
-                label="作品标题"
-                hint="同一工作区内不能重名，素材与审批将使用此标题。"
-              >
+            <div className="form-grid analysis-fields">
+              <Field label="作品标题">
                 <input
                   name="title"
                   value={title}
                   onChange={(event) => setTitle(event.target.value)}
                   required
                   maxLength={300}
-                  placeholder="为这份研究起一个容易识别的名字"
                 />
               </Field>
               <Field label="所属平台">
-                <select name="platform">
-                  <option value="抖音">抖音</option>
-                  <option value="小红书">小红书</option>
-                  <option value="B站">B站</option>
-                  <option value="视频号">视频号</option>
-                  <option value="YouTube">YouTube</option>
-                  <option value="其他">其他 / 未发布</option>
-                </select>
+                <EditableChoice name="platform" options={CONTENT_PLATFORMS} />
               </Field>
               <Field label="内容类别">
-                <input name="category" placeholder="例如：AI 工具、编程教育" />
+                <EditableChoice
+                  name="category"
+                  options={[...categoryOptions, "其他"]}
+                />
               </Field>
               <Field label="关联创作者账号">
-                <select name="account_id">
-                  <option value="">暂不关联</option>
-                  {rows(accounts.data).map((a) => (
-                    <option value={a.id} key={a.id}>
-                      {a.name} · {a.platform}
-                    </option>
-                  ))}
-                </select>
+                <EditableChoice
+                  name="account_name"
+                  value={accountName}
+                  onChange={(value) =>
+                    setAccountName(value === "关联账号" ? "" : value)
+                  }
+                  options={[
+                    "关联账号",
+                    "暂不关联",
+                    ...new Set(
+                      rows(accounts.data).map(
+                        (item) => `${item.name} · ${item.platform}`,
+                      ),
+                    ),
+                  ]}
+                />
               </Field>
               <Field label="作者 / 账号名">
-                <input name="author" placeholder="原始作品作者（可选）" />
+                <input name="author" />
               </Field>
               <Field label="发布日期">
-                <input name="published_at" type="date" />
+                <ChineseDateInput />
               </Field>
             </div>
             <Field
@@ -337,12 +419,15 @@ export function Analyze() {
                   AI 会将分析所需的素材内容发送至已配置的 MiMo
                   服务。费用按配置单价估算，实际账单以服务商为准；超预算任务会停止。
                 </Notice>
-                <Field label="本次任务预算上限（元）">
+                <Field
+                  label="本次任务预算上限（元）"
+                  hint="按你填写的金额限制费用，单次最高 10 元；费用为估算，以服务商账单为准。"
+                >
                   <input
                     name="budget"
                     type="number"
                     min="0.01"
-                    max="100"
+                    max="10"
                     step="0.01"
                     defaultValue="1"
                     required
@@ -405,34 +490,173 @@ export function Analyze() {
           </div>
         </div>
       </div>
-      <Card title="分析历史" subtitle="持久保存报告、任务状态与编辑版本">
-        {history.loading ? (
-          <Loading />
-        ) : history.error ? (
-          <Notice tone="error">{history.error}</Notice>
-        ) : rows(history.data).length ? (
-          <div className="record-list">
-            {rows(history.data).map((a) => (
-              <Link className="record" key={a.id} href={`/analyses/${a.id}`}>
-                <div>
-                  <h3>{analysisLabel(a)}</h3>
-                  <p>
-                    {dateLabel(a.created_at)} · {label(a.mode)}
-                  </p>
+      <Card>
+        <details className="analysis-history">
+          <summary>
+            <span>
+              <h2>分析历史</h2>
+              <small>{history.data?.total || 0} 条记录 · 点击展开或收起</small>
+            </span>
+            <ChevronDown size={20} />
+          </summary>
+          {history.loading ? (
+            <Loading />
+          ) : history.error ? (
+            <Notice tone="error">{history.error}</Notice>
+          ) : rows(history.data).length ? (
+            <div
+              className="record-list history-scroll"
+              tabIndex={0}
+              aria-label="分析历史记录"
+            >
+              {rows(history.data).map((a) => (
+                <div className="record history-item" key={a.id}>
+                  <Link className="grow" href={`/analyses/${a.id}`}>
+                    <h3>{analysisLabel(a)}</h3>
+                    <p>
+                      {dateLabel(a.created_at)} · {label(a.mode)}
+                    </p>
+                    {a.note && <p className="history-note">备注：{a.note}</p>}
+                  </Link>
+                  <div className="row-actions">
+                    <Status value={a.status} />
+                    <div
+                      className="history-actions"
+                      onKeyDown={(event) => {
+                        if (event.key === "Escape") setMenuId(null);
+                      }}
+                      onBlur={(event) => {
+                        if (!event.currentTarget.contains(event.relatedTarget))
+                          setMenuId(null);
+                      }}
+                    >
+                      <button
+                        type="button"
+                        className="icon-button"
+                        aria-label={`管理${analysisLabel(a)}`}
+                        aria-expanded={menuId === a.id}
+                        onClick={() => setMenuId(menuId === a.id ? null : a.id)}
+                      >
+                        <MoreHorizontal size={20} />
+                      </button>
+                      {menuId === a.id && (
+                        <div className="history-menu" role="menu">
+                          {(
+                            [
+                              ["note", "备注"],
+                              ["share", "分享"],
+                              ["delete", "删除"],
+                            ] as const
+                          ).map(([kind, text]) => (
+                            <button
+                              type="button"
+                              role="menuitem"
+                              key={kind}
+                              disabled={
+                                kind === "share" && a.status !== "SUCCEEDED"
+                              }
+                              onClick={() => {
+                                setHistoryError("");
+                                setMenuId(null);
+                                setHistoryAction({ kind, item: a });
+                              }}
+                            >
+                              {text}
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  </div>
                 </div>
-                <div className="row-actions">
-                  <Status value={a.status} />
-                  <ArrowRight size={16} />
-                </div>
-              </Link>
-            ))}
-          </div>
-        ) : (
-          <Empty title="还没有分析记录">
-            从上方提交第一份作品，报告将保存在这里。
-          </Empty>
-        )}
+              ))}
+            </div>
+          ) : (
+            <Empty title="还没有分析记录">
+              从上方提交第一份作品，报告将保存在这里。
+            </Empty>
+          )}
+          {(history.data?.total || 0) > 30 && (
+            <nav
+              className="row-actions history-pages"
+              aria-label="分析历史分页"
+            >
+              <Button
+                variant="secondary"
+                disabled={historyOffset === 0}
+                onClick={() =>
+                  setHistoryOffset(Math.max(0, historyOffset - 30))
+                }
+              >
+                上一页
+              </Button>
+              <span>第 {Math.floor(historyOffset / 30) + 1} 页</span>
+              <Button
+                variant="secondary"
+                disabled={historyOffset + 30 >= history.data.total}
+                onClick={() => setHistoryOffset(historyOffset + 30)}
+              >
+                下一页
+              </Button>
+            </nav>
+          )}
+        </details>
       </Card>
+      {historyAction && (
+        <Modal
+          title={`${{ note: "分析备注", share: "分享报告", delete: "删除分析记录" }[historyAction.kind]} · ${analysisLabel(historyAction.item)}`}
+          close={() => {
+            if (!historyBusy) setHistoryAction(null);
+          }}
+        >
+          {historyAction.kind === "note" ? (
+            <DataForm
+              endpoint={`/analyses/${historyAction.item.id}`}
+              method="PATCH"
+              fields={[
+                {
+                  name: "note",
+                  label: "备注（最多 3000 字）",
+                  type: "textarea",
+                },
+              ]}
+              initial={historyAction.item}
+              onDone={() => {
+                setHistoryAction(null);
+                void history.refresh();
+              }}
+            />
+          ) : (
+            <div className="stack">
+              <p>
+                {historyAction.kind === "share"
+                  ? "下载报告文件后，即可通过聊天工具转发给需要查看的人。"
+                  : "此操作会将记录移出分析历史，原始素材和费用记录保留。正在进行或已交付的报告无法删除。"}
+              </p>
+              {historyError && <Notice tone="error">{historyError}</Notice>}
+              <div className="row-actions">
+                <Button
+                  variant="secondary"
+                  disabled={historyBusy}
+                  onClick={() => setHistoryAction(null)}
+                >
+                  取消
+                </Button>
+                <Button
+                  busy={historyBusy}
+                  onClick={() =>
+                    historyAction.kind === "share"
+                      ? void shareHistory(historyAction.item)
+                      : void deleteHistory(historyAction.item)
+                  }
+                >
+                  {historyAction.kind === "share" ? "下载分享文件" : "删除记录"}
+                </Button>
+              </div>
+            </div>
+          )}
+        </Modal>
+      )}
     </>
   );
 }

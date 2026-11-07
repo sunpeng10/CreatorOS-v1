@@ -16,7 +16,7 @@ from .auth import current_user, owned
 from .db import get_db
 from .mimo import MiMoClient
 from .models import (AgentRun, AgentStep, AuditLog, ContentAnalysis, ContentItem,
-                     ContentVersion, CostEvent, User, serialize, stamp)
+                     ContentVersion, CostEvent, Delivery, User, serialize, stamp)
 from .workflow import STAGES, cache_key, create_run, execute_run, take_snapshot
 
 router = APIRouter(prefix="/api", tags=["分析与任务"])
@@ -32,11 +32,15 @@ class AnalysisRequest(BaseModel):
 
 class StartRequest(BaseModel):
     confirm_paid: bool = False
-    budget: float = Field(default=1, gt=0, le=1000)
+    budget: float = Field(default=1, gt=0, le=10)
 
 
 class RetryRequest(BaseModel):
-    budget: float | None = Field(default=None, gt=0, le=1000)
+    budget: float | None = Field(default=None, gt=0, le=10)
+
+
+class AnalysisNoteRequest(BaseModel):
+    note: str | None = Field(default='', max_length=3000)
 
 
 class VersionRequest(BaseModel):
@@ -46,6 +50,13 @@ class VersionRequest(BaseModel):
 
 def _error(code, message, status=400):
     raise HTTPException(status, detail={"code": code, "message": message})
+
+
+def _visible_analysis(db, analysis_id, user):
+    analysis = owned(db, ContentAnalysis, analysis_id, user)
+    if (analysis.data or {}).get('deleted_at'):
+        _error('ANALYSIS_NOT_FOUND', '分析不存在或已删除。', 404)
+    return analysis
 
 
 def _steps(db, run_id):
@@ -99,7 +110,8 @@ def create_analysis(body: AnalysisRequest, background: BackgroundTasks, db: Sess
     key = cache_key(snapshot)
     prior = db.scalar(select(ContentAnalysis).where(ContentAnalysis.organization_id == user.organization_id,
                                                    ContentAnalysis.content_id == content.id, ContentAnalysis.mode == body.mode,
-                                                   ContentAnalysis.cache_key == key, ContentAnalysis.status == "SUCCEEDED")
+                                                   ContentAnalysis.cache_key == key, ContentAnalysis.status == "SUCCEEDED",
+                                                   ContentAnalysis.data['deleted_at'].as_string().is_(None))
                       .order_by(ContentAnalysis.created_at.desc()))
     if prior:
         return {**_detail(db, prior), "cached": True}
@@ -117,7 +129,7 @@ def create_analysis(body: AnalysisRequest, background: BackgroundTasks, db: Sess
 def start_analysis(analysis_id: str, body: StartRequest, background: BackgroundTasks,
                    db: Session = Depends(get_db), user: User = Depends(current_user)):
     with _start_lock:
-        analysis = owned(db, ContentAnalysis, analysis_id, user)
+        analysis = _visible_analysis(db, analysis_id, user)
         if analysis.task_id:
             return _detail(db, analysis)
         if analysis.mode == "ai":
@@ -139,7 +151,8 @@ def start_analysis(analysis_id: str, body: StartRequest, background: BackgroundT
 @router.get("/analyses")
 def analyses(limit: int = Query(30, ge=1, le=100), offset: int = Query(0, ge=0),
              db: Session = Depends(get_db), user: User = Depends(current_user)):
-    query = select(ContentAnalysis).where(ContentAnalysis.organization_id == user.organization_id)
+    query = select(ContentAnalysis).where(ContentAnalysis.organization_id == user.organization_id,
+                                           ContentAnalysis.data['deleted_at'].as_string().is_(None))
     total = db.scalar(select(func.count()).select_from(query.subquery()))
     items = db.execute(query.add_columns(ContentItem.title).join(ContentItem, ContentItem.id == ContentAnalysis.content_id)
                        .where(ContentItem.organization_id == user.organization_id)
@@ -149,17 +162,46 @@ def analyses(limit: int = Query(30, ge=1, le=100), offset: int = Query(0, ge=0),
 
 @router.get("/analyses/{analysis_id}")
 def analysis_detail(analysis_id: str, db: Session = Depends(get_db), user: User = Depends(current_user)):
-    return _detail(db, owned(db, ContentAnalysis, analysis_id, user))
+    return _detail(db, _visible_analysis(db, analysis_id, user))
+
+
+@router.patch('/analyses/{analysis_id}')
+def update_analysis_note(analysis_id: str, body: AnalysisNoteRequest, db: Session = Depends(get_db), user: User = Depends(current_user)):
+    analysis = _visible_analysis(db, analysis_id, user)
+    analysis.data = {**analysis.data, 'note': (body.note or '').strip()}
+    db.add(AuditLog(organization_id=user.organization_id, actor_id=user.id, action='analysis.note_updated', target_id=analysis.id))
+    db.commit()
+    return _detail(db, analysis)
+
+
+@router.delete('/analyses/{analysis_id}')
+def delete_analysis(analysis_id: str, db: Session = Depends(get_db), user: User = Depends(current_user)):
+    with _start_lock:
+        analysis = _visible_analysis(db, analysis_id, user)
+        active = db.scalar(select(AgentRun.id).where(AgentRun.analysis_id == analysis.id,
+                                                    AgentRun.organization_id == user.organization_id,
+                                                    AgentRun.status.in_(['QUEUED', 'RUNNING', 'WAITING_APPROVAL'])).limit(1))
+        if active or analysis.status in {'RUNNING', 'WAITING_APPROVAL'} or analysis.mode == 'local' and analysis.status == 'QUEUED':
+            _error('ANALYSIS_ACTIVE', '请先取消正在进行的任务，再删除分析记录。', 409)
+        if db.scalar(select(Delivery.id).where(Delivery.analysis_id == analysis.id).limit(1)):
+            _error('ANALYSIS_DELIVERED', '报告已用于订单交付，不能删除。', 409)
+        analysis.data = {**analysis.data, 'deleted_at': stamp(), 'deleted_by': user.id}
+        db.add(AuditLog(organization_id=user.organization_id, actor_id=user.id, action='analysis.deleted', target_id=analysis.id))
+        db.commit()
+        return {'id': analysis.id, 'deleted': True}
 
 
 @router.get("/tasks/{task_id}")
 def task_detail(task_id: str, db: Session = Depends(get_db), user: User = Depends(current_user)):
-    return _task(db, owned(db, AgentRun, task_id, user))
+    run = owned(db, AgentRun, task_id, user)
+    _visible_analysis(db, run.analysis_id, user)
+    return _task(db, run)
 
 
 @router.post("/tasks/{task_id}/cancel")
 def cancel_task(task_id: str, db: Session = Depends(get_db), user: User = Depends(current_user)):
     run = owned(db, AgentRun, task_id, user)
+    _visible_analysis(db, run.analysis_id, user)
     if run.status == "SUCCEEDED":
         _error("TASK_FINISHED", "任务已完成。", 409)
     if run.status != "CANCELED":
@@ -172,7 +214,7 @@ def cancel_task(task_id: str, db: Session = Depends(get_db), user: User = Depend
             if run.status == "SUCCEEDED":
                 _error("TASK_FINISHED", "任务已完成。", 409)
             return _task(db, run)
-        analysis = owned(db, ContentAnalysis, run.analysis_id, user)
+        analysis = _visible_analysis(db, run.analysis_id, user)
         analysis.status = "CANCELED"
         for step in db.scalars(select(AgentStep).where(AgentStep.run_id == run.id, AgentStep.status == "QUEUED")):
             step.status = "CANCELED"
@@ -188,15 +230,15 @@ def retry_task(task_id: str, background: BackgroundTasks, body: RetryRequest | N
         run = owned(db, AgentRun, task_id, user)
         if run.status != "FAILED":
             _error("TASK_NOT_FAILED", "只能重试失败任务；取消的任务请重新创建分析。", 409)
-        analysis = owned(db, ContentAnalysis, run.analysis_id, user)
+        analysis = _visible_analysis(db, run.analysis_id, user)
         if analysis.mode == "ai":
             client = MiMoClient()
             if not run.data.get("paid_consent") or not client.api_key:
                 _error("AI_NOT_CONFIGURED", "付费授权或服务端模型配置缺失。", 503)
-            if body and body.budget is not None:
-                if body.budget > client.max_task_cost or body.budget <= run.cost:
-                    _error("BUDGET_LIMIT", "新预算需高于已估算费用且不超过服务端任务上限。")
-                run.budget = body.budget
+            budget = body.budget if body and body.budget is not None else min(run.budget, client.max_task_cost)
+            if budget > client.max_task_cost or budget <= run.cost:
+                _error("BUDGET_LIMIT", "新预算需高于已估算费用，且单次不能超过 10 元。")
+            run.budget = budget
         run.status, run.error, analysis.status = "QUEUED", "", "QUEUED"
         for step in db.scalars(select(AgentStep).where(AgentStep.run_id == run.id, AgentStep.status == "FAILED")):
             step.status, step.error = "QUEUED", ""
@@ -210,7 +252,7 @@ def retry_task(task_id: str, background: BackgroundTasks, body: RetryRequest | N
 @router.get("/analyses/{analysis_id}/export")
 def export_analysis(analysis_id: str, format: Literal["json", "markdown"] = "json",
                     db: Session = Depends(get_db), user: User = Depends(current_user)):
-    analysis = owned(db, ContentAnalysis, analysis_id, user)
+    analysis = _visible_analysis(db, analysis_id, user)
     if analysis.status != "SUCCEEDED":
         _error("REPORT_NOT_READY", "分析尚未成功，暂不能导出报告。", 409)
     if format == "json":
@@ -230,7 +272,7 @@ def export_analysis(analysis_id: str, format: Literal["json", "markdown"] = "jso
 
 @router.post("/analyses/{analysis_id}/versions")
 def save_version(analysis_id: str, body: VersionRequest, db: Session = Depends(get_db), user: User = Depends(current_user)):
-    analysis = owned(db, ContentAnalysis, analysis_id, user)
+    analysis = _visible_analysis(db, analysis_id, user)
     content = owned(db, ContentItem, analysis.content_id, user)
     number = (db.scalar(select(func.max(ContentVersion.version)).where(ContentVersion.content_id == content.id,
                                                                       ContentVersion.organization_id == user.organization_id)) or 0) + 1

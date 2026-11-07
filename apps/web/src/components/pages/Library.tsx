@@ -10,6 +10,7 @@ import {
   Upload,
 } from "lucide-react";
 import { api, post, rows, useResource } from "@/lib/api";
+import { CONTENT_PLATFORMS } from "@/lib/content-options";
 import { dateLabel, formatMetric } from "@/lib/format";
 import {
   Badge,
@@ -59,6 +60,14 @@ export function Library() {
         .toLowerCase()
         .includes(query.toLowerCase()),
   );
+  const platforms = [
+    ...new Set([
+      ...CONTENT_PLATFORMS,
+      ...rows(r.data)
+        .map((item) => String(item.platform || "").trim())
+        .filter(Boolean),
+    ]),
+  ];
   async function act(fn: () => Promise<any>, msg: string) {
     setBusy(true);
     setError("");
@@ -113,7 +122,7 @@ export function Library() {
           onChange={(e) => setPlatform(e.target.value)}
         >
           <option value="">全部平台</option>
-          {[...new Set(rows(r.data).map((x) => x.platform))].map((x) => (
+          {platforms.map((x) => (
             <option key={x}>{x}</option>
           ))}
         </select>
