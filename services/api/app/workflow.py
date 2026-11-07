@@ -15,7 +15,7 @@ from fastapi import HTTPException
 from .db import SessionLocal
 from .mimo import MiMoClient, MiMoError
 from .models import (AgentRun, AgentStep, AnalysisEvidence, Approval, AuditLog, BenchmarkItem,
-                     ContentAnalysis, ContentAsset, CostEvent, MetricSnapshot, serialize, stamp)
+                     ContentAnalysis, ContentAsset, CostEvent, MetricSnapshot, User, serialize, stamp)
 from .schemas_ai import (SCHEMAS, BusinessOutput, ContentOutput, COOOutput, DataOutput,
                          Finding, QualityOutput, Report, RetrievalOutput, StrategyDraft, StrategyOutput)
 
@@ -355,9 +355,10 @@ def execute_run(run_id, session_factory=None, adapter_factory=None):
                     pending = db.scalar(select(Approval).where(Approval.target_id == run.id,
                                                                Approval.kind == "COMPLIANCE_REVIEW", Approval.status == "PENDING"))
                     if not pending:
-                        db.add(Approval(organization_id=run.organization_id, kind="COMPLIANCE_REVIEW", target_id=run.id,
+                        owner = db.scalar(select(User).where(User.role == 'OWNER_ADMIN').order_by(User.created_at, User.id))
+                        db.add(Approval(organization_id=owner.organization_id if owner else run.organization_id, kind="COMPLIANCE_REVIEW", target_id=run.id,
                                         status="PENDING", reason=output.report.review_reason or "报告需要人工合规复核。",
-                                        data={"analysis_id": analysis.id, "step_id": step.id}))
+                                        data={"analysis_id": analysis.id, "step_id": step.id, "requester_org": run.organization_id}))
                     run.status, analysis.status, step.status = "WAITING_APPROVAL", "WAITING_APPROVAL", "WAITING_APPROVAL"
                     db.commit()
                     return
@@ -394,6 +395,16 @@ def execute_run(run_id, session_factory=None, adapter_factory=None):
 def recover_interrupted_tasks(session_factory=None):
     """On process startup, make interrupted jobs explicitly retryable; never resume paid calls silently."""
     with (session_factory or SessionLocal)() as db:
+        owner = db.scalar(select(User).where(User.role == 'OWNER_ADMIN').order_by(User.created_at, User.id))
+        if owner:
+            for approval in db.scalars(select(Approval).where(Approval.kind == 'COMPLIANCE_REVIEW', Approval.status == 'PENDING')):
+                run = db.get(AgentRun, approval.target_id)
+                analysis = db.get(ContentAnalysis, run.analysis_id) if run else None
+                if (run and analysis and run.organization_id == approval.organization_id
+                        and analysis.organization_id == run.organization_id and run.status == 'WAITING_APPROVAL'):
+                    approval.data = {**approval.data, 'requester_org': run.organization_id}
+                    approval.organization_id = owner.organization_id
+                    db.add(AuditLog(organization_id=owner.organization_id, action='approval.routed_to_owner', target_id=approval.id))
         runs = db.scalars(select(AgentRun).where(AgentRun.status.in_(["RUNNING", "QUEUED"]))).all()
         for run in runs:
             run.status = "FAILED"
@@ -413,12 +424,13 @@ def apply_compliance_decision(db, approval, decision, user):
     if user.role != "OWNER_ADMIN":
         raise HTTPException(403, "仅老板管理员可审批合规问题。")
     run = db.get(AgentRun, approval.target_id)
-    if not run or run.organization_id != user.organization_id or approval.organization_id != user.organization_id:
+    if (not run or approval.organization_id != user.organization_id
+            or (run.organization_id != user.organization_id and approval.data.get('requester_org') != run.organization_id)):
         raise HTTPException(404, "审批对应任务不存在。")
     if run.status != "WAITING_APPROVAL" or decision not in {"APPROVED", "REJECTED"}:
         raise HTTPException(409, "该任务已不处于待审批状态。")
     analysis = db.get(ContentAnalysis, run.analysis_id)
-    if not analysis or analysis.organization_id != user.organization_id:
+    if not analysis or analysis.organization_id != run.organization_id:
         raise HTTPException(404, "审批对应报告不存在。")
     quality = db.scalar(select(AgentStep).where(AgentStep.run_id == run.id, AgentStep.name == "quality"))
     if not quality or quality.status != "WAITING_APPROVAL":

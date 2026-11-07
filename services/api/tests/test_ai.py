@@ -280,9 +280,14 @@ def test_process_interruption_preserves_in_flight_reservation(ai_database):
 def test_compliance_review_pauses_and_approved_resume_does_not_repeat_stages(ai_database, monkeypatch):
     from sqlalchemy import select
     from app import workflow
-    from app.models import AgentRun, AgentStep, Approval
+    from app.models import AgentRun, AgentStep, Approval, Organization, User
     factory, db, user, content, analysis = ai_database
-    user.role = "OWNER_ADMIN"
+    owner_org = Organization(name='公司审批工作区')
+    db.add(owner_org)
+    db.flush()
+    owner = User(organization_id=owner_org.id, email='owner@test.local', password_hash='unused', role='OWNER_ADMIN')
+    db.add(owner)
+    db.commit()
     run = workflow.create_run(db, analysis, workflow.take_snapshot(db, content, "local"), 0, False)
     original = workflow._execute_stage
     def mark_review(name, *args):
@@ -297,7 +302,9 @@ def test_compliance_review_pauses_and_approved_resume_does_not_repeat_stages(ai_
     assert db.get(AgentRun, run.id).status == "WAITING_APPROVAL"
     approval = db.scalar(select(Approval).where(Approval.target_id == run.id))
     assert approval.kind == "COMPLIANCE_REVIEW"
-    callback, args = workflow.apply_compliance_decision(db, approval, "APPROVED", user)
+    assert approval.organization_id == owner.organization_id
+    assert approval.data['requester_org'] == user.organization_id
+    callback, args = workflow.apply_compliance_decision(db, approval, "APPROVED", owner)
     approval.status = "APPROVED"
     db.commit()
     callback(*args)
