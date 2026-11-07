@@ -9,6 +9,82 @@ def test_business_module_exists():
     assert importlib.util.find_spec("app.business") is not None, "business router is not implemented"
 
 
+def test_customer_loop_order_acceptance_revenue_and_delivery(business_client):
+    http, _, active, admin, customer = business_client
+    service = http.post('/api/admin/services', json={'name': '服务咨询', 'price': 9.9}).json()
+    active['user'] = customer
+    payload = {'service_id': service['id'], 'need': '怎样改善口语视频？', 'request_id': 'checkout-one', 'amount': 0.01, 'customer_user_id': admin.id}
+    created = http.post('/api/orders', json=payload)
+    assert created.status_code == 200, created.text
+    order = created.json()
+    assert order['amount'] == 9.9 and order['status'] == 'REQUESTED'
+    assert order['customer_user_id'] == customer.id
+    assert http.post('/api/orders', json=payload).json()['id'] == order['id']
+    assert http.get('/api/tickets').json()['total'] >= 1
+    active['user'] = admin
+    assert http.get('/api/admin/finance').json()['booked_revenue'] == 0
+    assert http.post(f'/api/admin/orders/{order["id"]}/accept').status_code == 200
+    assert http.post(f'/api/admin/orders/{order["id"]}/accept').status_code == 200
+    assert http.get('/api/admin/finance').json()['booked_revenue'] == 9.9
+    overview = http.get('/api/admin/overview').json()
+    assert overview['orders'] == len(overview['details']['orders']) == 1
+    assert overview['leads'] == len(overview['details']['leads']) == 1
+    assert http.post(f'/api/admin/orders/{order["id"]}/complete', json={'note': '已提供口语改进建议'}).status_code == 200
+    active['user'] = customer
+    assert http.get('/api/orders').json()['items'][0]['status'] == 'DELIVERED'
+    assert any('已提供口语改进建议' in str(t['timeline']) for t in http.get('/api/tickets').json()['items'])
+    assert http.post(f'/api/orders/{order["id"]}/accept').json()['status'] == 'COMPLETED'
+
+
+def test_customer_loop_excludes_demo_records_and_denies_other_customer(business_client):
+    from app.models import Lead, Quote, Order, Ticket, User, Organization
+    http, factory, active, admin, customer = business_client
+    with factory() as db:
+        link = {'customer_user_id': customer.id, 'customer_organization_id': customer.organization_id}
+        lead = Lead(organization_id=admin.organization_id, contact='DEMO', need='DEMO 测试', data=link)
+        quote = Quote(organization_id=admin.organization_id, amount=99, status='APPROVED', data=link)
+        db.add_all([lead, quote]); db.flush()
+        order = Order(organization_id=admin.organization_id, quote_id=quote.id, amount=99, status='COMPLETED', is_demo=True, data=link)
+        db.add(order); db.flush()
+        ticket = Ticket(organization_id=admin.organization_id, subject='DEMO 工单', order_id=order.id, data=link)
+        db.add(ticket); db.commit()
+    assert http.get('/api/admin/overview').json()['orders'] == 0
+    assert http.get('/api/admin/overview').json()['leads'] == 0
+    assert http.get('/api/admin/tickets').json()['items'] == []
+    assert http.get('/api/admin/finance').json()['booked_revenue'] == 0
+    service = http.post('/api/admin/services', json={'name': '服务咨询', 'price': 9.9}).json()
+    active['user'] = customer
+    real_order = http.post('/api/orders', json={'service_id': service['id'], 'need': '客户需求', 'request_id': 'customer-only'}).json()
+    with factory() as db:
+        org = Organization(name='无关客户'); db.add(org); db.flush()
+        stranger = User(organization_id=org.id, email='stranger@example.test', password_hash='unused'); db.add(stranger); db.commit()
+    active['user'] = stranger
+    assert http.get('/api/orders').json()['items'] == []
+    assert http.get('/api/tickets').json()['items'] == []
+    assert http.post(f'/api/orders/{real_order["id"]}/accept').status_code == 404
+
+
+def test_customer_loop_repairs_authorized_legacy_binding_without_losing_messages(business_client):
+    from app.models import Lead, Ticket
+    from app.customer_links import repair_customer_links
+    http, factory, active, admin, customer = business_client
+    with factory() as db:
+        lead = Lead(organization_id=admin.organization_id, contact=customer.email.upper(), need='真实客户需求', data={'customer_user_id': admin.id, 'customer_organization_id': admin.organization_id})
+        db.add(lead); db.flush()
+        ticket = Ticket(organization_id=admin.organization_id, subject='需求跟进', status='RESOLVED', data={'lead_id': lead.id, 'customer_user_id': admin.id, 'customer_organization_id': admin.organization_id, 'timeline': [{'role': 'OWNER_ADMIN', 'note': '处理完毕'}]})
+        db.add(ticket); db.commit()
+        repair_customer_links(db); db.commit()
+        lead_id = lead.id
+    active['user'] = customer
+    tickets = http.get('/api/tickets').json()['items']
+    assert len(tickets) == 1 and tickets[0]['status'] == 'RESOLVED'
+    assert tickets[0]['timeline'][0]['note'] == '处理完毕'
+    active['user'] = admin
+    assert http.patch(f'/api/admin/leads/{lead_id}', json={'customer_reply': '补充建议', 'status': 'QUALIFIED'}).status_code == 200
+    active['user'] = customer
+    assert http.get('/api/tickets').json()['items'][0]['reply'] == '补充建议'
+
+
 def test_work_title_labels_existing_assets_and_delegated_approvals(business_client):
     from app.models import ContentItem, ContentAnalysis, ContentAsset, AgentRun, Approval, serialize
     http, factory, _, admin, client = business_client
@@ -69,10 +145,10 @@ def test_requested_lead_reply_and_order_tickets_reach_only_linked_customer(busin
     from app.models import Lead, Quote, Order, Ticket, User, Organization
     http, factory, active, admin, client = business_client
     with factory() as db:
-        lead = Lead(organization_id=admin.organization_id, contact='TEST', need='TEST 客户咨询', data={'customer_user_id': client.id, 'customer_organization_id': client.organization_id})
+        lead = Lead(organization_id=admin.organization_id, contact=client.email, need='客户咨询', data={'customer_user_id': client.id, 'customer_organization_id': client.organization_id})
         quote = Quote(organization_id=admin.organization_id, status='APPROVED', amount=0)
         db.add_all([lead, quote]); db.flush()
-        order = Order(organization_id=admin.organization_id, quote_id=quote.id, amount=0, data={'customer_user_id': client.id, 'customer_organization_id': client.organization_id})
+        order = Order(organization_id=admin.organization_id, quote_id=quote.id, amount=0, is_demo=False, data={'customer_user_id': client.id, 'customer_organization_id': client.organization_id})
         db.add(order); db.commit()
     response = http.patch(f'/api/admin/leads/{lead.id}', json={'notes': 'INTERNAL_SECRET', 'customer_reply': '请补充目标受众'})
     assert response.status_code == 200, response.text
@@ -85,13 +161,13 @@ def test_requested_lead_reply_and_order_tickets_reach_only_linked_customer(busin
     http.patch(f'/api/tickets/{ticket_id}', json={'reply': '初学者为主'})
     active['user'] = admin
     assert http.get('/api/admin/tickets').json()['items'][0]['timeline'][-1]['note'] == '初学者为主'
-    admin_ticket = http.post('/api/tickets', json={'order_id': order.id, 'subject': 'TEST 交付沟通', 'description': '已收到需求'}).json()
+    admin_ticket = http.post('/api/tickets', json={'order_id': order.id, 'subject': '交付沟通', 'description': '已收到需求'}).json()
     active['user'] = client
     assert any(t['id'] == admin_ticket['id'] for t in http.get('/api/tickets').json()['items'])
     assert http.get('/api/orders').json()['items'][0]['ticket_count'] == 1
     assert http.get(f'/api/admin/leads/{lead.id}').status_code == 403
     with factory() as db:
-        legacy = Ticket(organization_id=admin.organization_id, order_id=order.id, subject='TEST 旧订单工单', data={'customer_user_id': admin.id, 'customer_organization_id': admin.organization_id})
+        legacy = Ticket(organization_id=admin.organization_id, order_id=order.id, subject='旧订单工单', data={'customer_user_id': admin.id, 'customer_organization_id': admin.organization_id})
         stranger_org = Organization(name='TEST 无关工作区')
         db.add_all([legacy, stranger_org]); db.flush()
         stranger = User(organization_id=stranger_org.id, email='stranger@example.test', password_hash='unused')
@@ -102,8 +178,7 @@ def test_requested_lead_reply_and_order_tickets_reach_only_linked_customer(busin
     assert http.get('/api/tickets').json()['items'] == []
     assert http.patch(f'/api/tickets/{ticket_id}', json={'reply': '越权'}).status_code == 404
     active['user'] = admin
-    guest = http.post('/api/leads', json={'contact': 'guest@example.test', 'need': '访客需求'}).json()
-    assert http.patch(f'/api/admin/leads/{guest["id"]}', json={'customer_reply': '不可误发给邮箱同名用户'}).status_code == 422
+    assert http.post('/api/leads', json={'contact': 'guest@example.test', 'need': '访客需求'}).status_code == 403
 
 
 def test_missing_metrics_stay_null_and_invalid_counts_rejected():
@@ -199,35 +274,43 @@ def test_metrics_preview_import_dedupe_and_null(business_client):
     assert http.get("/api/analytics/overview?denominator=invalid").status_code == 422
 
 
-def test_order_requires_approval_payment_and_successful_analysis(business_client):
-    http, factory, _, admin, _ = business_client
+def test_order_requires_approval_customer_confirmation_and_successful_analysis(business_client):
+    http, factory, active, admin, customer = business_client
     from app.models import ContentItem, ContentAnalysis
     service = http.post("/api/admin/services", json={"name": "测试诊断", "price": 49}).json()
-    quote = http.post("/api/admin/quotes", json={"service_id": service["id"], "amount": 49}).json()
+    active['user'] = customer
+    lead = http.post('/api/leads', json={'contact': customer.email, 'need': '视频诊断'}).json()
+    active['user'] = admin
+    quote = http.post("/api/admin/quotes", json={"service_id": service["id"], 'lead_id': lead['id'], "amount": 49}).json()
     assert http.post("/api/admin/orders", json={"quote_id": quote["id"]}).status_code == 409
     approval = http.get("/api/approvals").json()["items"][0]
     approved = http.post("/api/approvals/" + approval["id"] + "/decision", json={"decision": "APPROVED", "reason": "人工确认演示报价"})
     assert approved.status_code == 200, approved.text
     order = http.post("/api/admin/orders", json={"quote_id": quote["id"]}).json()
-    assert order["status"] == "AWAITING_PAYMENT"
+    assert order["status"] == "AWAITING_CUSTOMER"
+    assert http.get('/api/admin/overview').json()['orders'] == 0
     duplicate = http.post("/api/admin/orders", json={"quote_id": quote["id"]}).json()
     assert duplicate["id"] == order["id"]
     with factory() as db:
-        content = ContentItem(organization_id=admin.organization_id, title="演示内容", kind="text", text="测试")
+        content = ContentItem(organization_id=customer.organization_id, title="客户内容", kind="text", text="测试")
         db.add(content); db.flush()
-        analysis = ContentAnalysis(organization_id=admin.organization_id, content_id=content.id, status="SUCCEEDED", mode="local", report={"summary": "基础分析"})
+        analysis = ContentAnalysis(organization_id=customer.organization_id, content_id=content.id, status="SUCCEEDED", mode="local", report={"summary": "基础分析"})
         db.add(analysis); db.commit()
         analysis_id = analysis.id
     url = "/api/admin/orders/" + order["id"]
     assert http.post(url + "/deliver", json={"analysis_id": analysis_id}).status_code == 409
-    assert http.post(url + "/simulate-payment").status_code == 200
-    assert http.post(url + "/simulate-payment").status_code == 200
+    assert http.post(url + '/accept').status_code == 409
+    active['user'] = customer
+    assert http.post('/api/orders/' + order['id'] + '/confirm').status_code == 200
+    active['user'] = admin
+    assert http.post(url + '/accept').status_code == 200
+    assert http.post(url + "/simulate-payment").status_code == 410
     assert http.post(url + "/deliver", json={"analysis_id": analysis_id}).status_code == 200
+    active['user'] = customer
     assert http.post("/api/orders/" + order["id"] + "/accept").json()["status"] == "COMPLETED"
     assert http.post("/api/orders/" + order["id"] + "/accept").status_code == 200
-    finance = http.get("/api/admin/finance").json()
-    assert finance["demo_revenue"] == 49
-    assert finance["real_revenue"] == 0
+    active['user'] = admin
+    assert http.get("/api/admin/finance").json()['booked_revenue'] == 49
 
 
 def test_public_lead_ignores_caller_org_and_refund_needs_approval(business_client):
@@ -239,7 +322,7 @@ def test_public_lead_ignores_caller_org_and_refund_needs_approval(business_clien
     active["user"] = admin
     saved = http.get("/api/admin/leads").json()["items"][0]
     assert saved["organization_id"] == admin.organization_id
-    ticket = http.post("/api/tickets", json={"subject": "申请退款", "kind": "REFUND"}).json()
+    ticket = http.post("/api/tickets", json={"subject": "申请退款", "kind": "REFUND", 'customer_user_id': client.id}).json()
     assert ticket["status"] == "WAITING_APPROVAL"
     assert http.patch("/api/tickets/" + ticket["id"], json={"status": "RESOLVED"}).status_code == 409
 
@@ -310,14 +393,17 @@ def test_authenticated_customer_order_delivery_acceptance_and_refund(business_cl
         db.add(analysis); db.commit(); analysis_id = analysis.id
     http.cookies.set(COOKIE, token)
     active["user"] = client
-    lead = http.post("/api/leads", json={"contact": "TEST 客户", "need": "诊断", "organization_id": "attacker"}).json()
+    lead = http.post("/api/leads", json={"contact": client.email, "need": "诊断", "organization_id": "attacker"}).json()
     active["user"] = admin
     saved = http.get("/api/admin/leads/" + lead["id"]).json()
     assert saved["customer_organization_id"] == client.organization_id
     quote = http.post("/api/admin/quotes", json={"lead_id": lead["id"], "amount": 89}).json()
     http.post("/api/approvals/" + quote["approval_id"] + "/decision", json={"decision": "APPROVED", "reason": "人工审阅"})
     order = http.post("/api/admin/orders", json={"quote_id": quote["id"]}).json()
-    assert http.post("/api/admin/orders/" + order["id"] + "/simulate-payment").status_code == 200
+    active['user'] = client
+    assert http.post('/api/orders/' + order['id'] + '/confirm').status_code == 200
+    active['user'] = admin
+    assert http.post('/api/admin/orders/' + order['id'] + '/accept').status_code == 200
     assert http.post("/api/admin/orders/" + order["id"] + "/deliver", json={"analysis_id": analysis_id}).status_code == 200
     active["user"] = User(id="stranger", organization_id="unrelated", email="stranger@example.test", role="CLIENT_USER", password_hash="unused")
     assert http.get("/api/orders").json()["total"] == 0
@@ -325,14 +411,14 @@ def test_authenticated_customer_order_delivery_acceptance_and_refund(business_cl
     active["user"] = client
     assert http.get("/api/orders").json()["items"][0]["id"] == order["id"]
     assert http.post("/api/orders/" + order["id"] + "/accept").status_code == 200
-    ticket = http.post("/api/tickets", json={"subject": "DEMO 退款", "kind": "REFUND", "order_id": order["id"]}).json()
+    ticket = http.post("/api/tickets", json={"subject": "退款申请", "kind": "REFUND", "order_id": order["id"]}).json()
     active["user"] = admin
     approval = next(item for item in http.get("/api/approvals").json()["items"] if item["target_id"] == ticket["id"])
     result = http.post("/api/approvals/" + approval["id"] + "/decision", json={"decision": "APPROVED", "reason": "人工批准 DEMO 退款"})
     assert result.status_code == 200, result.text
-    assert http.post("/api/admin/orders/" + order["id"] + "/simulate-payment").status_code == 409
+    assert http.post("/api/admin/orders/" + order["id"] + "/simulate-payment").status_code == 410
     finance = http.get("/api/admin/finance").json()
-    assert finance["demo_revenue"] == 0 and finance["demo_refunds"] == 89 and finance["real_revenue"] == 0
+    assert finance['booked_revenue'] == 0
 
 
 def test_demo_metrics_label_is_preserved(business_client):
@@ -398,7 +484,7 @@ def test_high_risk_requests_only_record_approval_and_require_owned_targets(busin
     assert http.post("/api/approvals/requests", json=payment_request).status_code == 409
     http.post("/api/approvals/" + quote["approval_id"] + "/decision", json={"decision": "APPROVED", "reason": "人工核验报价"})
     assert http.post("/api/approvals/requests", json=payment_request).status_code == 200
-    assert http.get("/api/admin/finance").json()["real_revenue"] == 0
+    assert http.get("/api/admin/finance").json()['booked_revenue'] == 0
 
 
 def test_finance_includes_costs_only_for_explicit_customer_deliveries(business_client):
@@ -417,7 +503,7 @@ def test_finance_includes_costs_only_for_explicit_customer_deliveries(business_c
         db.add(CostEvent(organization_id=client.organization_id, run_id=private_run.id, model="test-model", estimated_cost=9))
         quote = Quote(organization_id=admin.organization_id, amount=100, status="APPROVED")
         db.add(quote); db.flush()
-        order = Order(organization_id=admin.organization_id, quote_id=quote.id, status="DELIVERED", data={"customer_organization_id": client.organization_id})
+        order = Order(organization_id=admin.organization_id, quote_id=quote.id, status="DELIVERED", is_demo=False, data={'customer_user_id': client.id, "customer_organization_id": client.organization_id})
         db.add(order); db.flush()
         db.add(Delivery(organization_id=admin.organization_id, order_id=order.id, analysis_id=linked.id))
         db.commit()

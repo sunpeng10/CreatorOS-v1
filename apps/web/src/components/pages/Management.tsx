@@ -32,8 +32,9 @@ export function Tickets({ admin = false }: { admin?: boolean }) {
   const params = useSearchParams();
   const orderId = params.get("order_id");
   const ticketId = params.get("ticket_id");
-  const r = useResource(admin ? "/admin/tickets" : "/tickets"),
-    orders = useResource(admin ? "/admin/orders" : "/orders");
+  const r = useResource(admin ? "/admin/tickets" : "/tickets", 15000),
+    orders = useResource(admin ? "/admin/orders" : "/orders", 15000),
+    customers = useResource(admin ? "/admin/leads" : null);
   const [edit, setEdit] = useState<Row | null | "new">(null);
   const fields: FormField[] =
     edit === "new"
@@ -63,6 +64,22 @@ export function Tickets({ admin = false }: { admin?: boolean }) {
               label: `${o.id.slice(0, 8)} · ${money(o.amount)}`,
             })),
           },
+          ...(admin
+            ? [
+                {
+                  name: "customer_user_id",
+                  label: "对应客户（未关联订单时必选）",
+                  options: Array.from(
+                    new Map(
+                      rows(customers.data).map((lead) => [
+                        lead.customer_user_id,
+                        { value: lead.customer_user_id, label: lead.contact },
+                      ]),
+                    ).values(),
+                  ),
+                },
+              ]
+            : []),
         ]
       : [
           {
@@ -132,6 +149,9 @@ export function Tickets({ admin = false }: { admin?: boolean }) {
                     <div className="row-actions">
                       <h3>{t.subject}</h3>
                       <Status value={t.status} />
+                      {t.lead_status && (
+                        <Badge>需求：{label(t.lead_status)}</Badge>
+                      )}
                     </div>
                     <p className="pre-wrap">{t.message || t.description}</p>
                     <small className="muted">
@@ -212,7 +232,7 @@ export function Tickets({ admin = false }: { admin?: boolean }) {
 }
 
 export function Finance() {
-  const r = useResource("/admin/finance"),
+  const r = useResource("/admin/finance", 15000),
     weekly = useResource("/admin/weekly-report");
   const d = r.data || {};
   return (
@@ -220,19 +240,19 @@ export function Finance() {
       <PageHeading
         eyebrow="BUSINESS OBSERVATORY"
         title="看清经营，也看清口径。"
-        description="模拟交易、实际收入和模型成本分别展示；每个数字都来自当前组织的业务记录。"
+        description="统计注册客户的真实需求、服务订单及模型用量。订单营收按老板已接单的金额计算。"
       />
       {r.error && <Notice tone="error">{r.error}</Notice>}
       <div className="stats-grid">
         <Stat
-          label="真实收入"
-          value={money(d.real_revenue)}
-          detail="仅统计真实付款记录"
+          label="订单营收"
+          value={money(d.booked_revenue)}
+          detail="客户下单且老板接单后计入"
         />
         <Stat
-          label="DEMO 模拟收入"
-          value={money(d.demo_revenue)}
-          detail="演示数据，不属于实际收入"
+          label="服务订单"
+          value={formatMetric(d.order_count || 0)}
+          detail={`已接单 ${d.accepted_order_count || 0} 笔`}
         />
         <Stat
           label="模型费用估算"
@@ -240,8 +260,8 @@ export function Finance() {
           detail="以模型供应商账单为准"
         />
         <Stat
-          label="真实毛利估算"
-          value={money(d.estimated_real_margin)}
+          label="订单毛利估算"
+          value={money(d.estimated_margin)}
           detail="尚未包含人工与其他经营成本"
         />
       </div>
@@ -268,18 +288,17 @@ export function Finance() {
               : `${(d.funnel.conversion_rate * 100).toFixed(1)}%`}
           </p>
         </Card>
-        <Card title="费用与支付记录">
+        <Card title="接单与费用记录">
           <JsonDetails
             data={{
-              payments: d.payments,
+              bookings: d.bookings,
               cost_events: d.cost_events,
-              demo_refunds: d.demo_refunds,
             }}
             title="查看逐笔记录"
           />
           <p className="muted mt-4">来源：{d.source || "工作区数据库"}</p>
           <Notice tone="warning">
-            模型费用只是配置单价下的估算；DEMO 支付不能用作实际收款证明。
+            当前营收按已接单的订单金额记账，尚未接入资金支付；模型费用按配置单价估算。
           </Notice>
         </Card>
       </div>

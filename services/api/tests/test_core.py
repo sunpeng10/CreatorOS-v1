@@ -1,6 +1,31 @@
 import io
 
 
+def test_customer_registration_claims_legacy_email_and_new_requests_require_identity(client):
+    from app.main import app
+    from app.db import get_db
+    from app.models import Lead, Ticket, Organization, User
+    database = app.dependency_overrides[get_db]()
+    db = next(database)
+    owner_org = Organization(name='公司'); db.add(owner_org); db.flush()
+    owner = User(organization_id=owner_org.id, role='OWNER_ADMIN', email='owner@example.test', password_hash='unused')
+    db.add(owner); db.flush()
+    lead = Lead(organization_id=owner_org.id, contact=' NewCustomer@Example.Test ', need='注册前的真实需求')
+    db.add(lead); db.flush()
+    ticket = Ticket(organization_id=owner_org.id, subject='需求跟进', status='RESOLVED', data={'lead_id': lead.id, 'timeline': [{'role': 'OWNER_ADMIN', 'note': '此前的处理结果'}]})
+    db.add(ticket); db.commit()
+    database.close()
+    assert client.post('/api/leads', json={'contact': 'newcustomer@example.test', 'need': '需求'}).status_code == 401
+    result = client.post('/api/auth/register', json={'email': 'newcustomer@example.test', 'password': 'Test-Password-482!', 'name': '客户'})
+    assert result.status_code == 200, result.text
+    found = client.get('/api/tickets').json()['items']
+    assert len(found) == 1 and found[0]['status'] == 'RESOLVED'
+    assert found[0]['timeline'][0]['note'] == '此前的处理结果'
+    assert client.post('/api/leads', json={'contact': 'somebody@example.test', 'need': '不能绑定错账号'}).status_code == 422
+    assert client.post('/api/leads', json={'contact': 'newcustomer@example.test', 'need': '新的真实需求', 'customer_user_id': owner.id}).status_code == 200
+    assert client.get('/api/tickets').json()['total'] == 2
+
+
 def test_register_cookie_and_role(client):
     r = client.post('/api/auth/register', json={'email': 'first@example.test', 'password': 'Test-Password-482!', 'name': '测试用户'})
     assert r.status_code == 200

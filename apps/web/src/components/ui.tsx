@@ -197,10 +197,12 @@ export function Modal({
   title,
   children,
   close,
+  className = "",
 }: {
   title: string;
   children: ReactNode;
   close: () => void;
+  className?: string;
 }) {
   return (
     <div className="modal-backdrop" onClick={close}>
@@ -208,7 +210,7 @@ export function Modal({
         role="dialog"
         aria-modal="true"
         aria-label={title}
-        className="modal"
+        className={`modal ${className}`}
         onClick={(e) => e.stopPropagation()}
       >
         <header>
@@ -249,21 +251,30 @@ export function Stat({
   value,
   detail,
   icon,
+  onClick,
 }: {
   label: string;
   value: ReactNode;
   detail: string;
   icon?: ReactNode;
+  onClick?: () => void;
 }) {
+  const Component = onClick ? "button" : "div";
   return (
-    <div className="stat">
+    <Component
+      className={`stat${onClick ? " stat-interactive" : ""}`}
+      onClick={onClick}
+      {...(onClick
+        ? { type: "button" as const, "aria-label": `查看${caption}明细` }
+        : {})}
+    >
       <div className="stat-top">
         {caption}
         <span>{icon}</span>
       </div>
       <strong>{value}</strong>
       <p>{detail}</p>
-    </div>
+    </Component>
   );
 }
 export type FormField = {

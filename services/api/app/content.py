@@ -12,6 +12,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from .auth import current_user, owned
+from .customer_links import customer_for, is_demo_record
 from .db import DATA_DIR, get_db
 from .media import parse_media, video_frames
 from .models import Approval, AuditLog, ContentAnalysis, ContentAsset, ContentItem, CreatorAccount, Experiment, Order, User, serialize
@@ -175,9 +176,10 @@ def dashboard(user: User = Depends(current_user), db: Session = Depends(get_db))
         return list(db.scalars(select(model).where(model.organization_id == user.organization_id).order_by(model.created_at.desc())))
     analyses, accounts, works = rows(ContentAnalysis), rows(CreatorAccount), rows(ContentItem)
     orders = list(db.scalars(select(Order).where(or_(Order.organization_id == user.organization_id, Order.data['customer_organization_id'].as_string() == user.organization_id)).order_by(Order.created_at.desc())))
+    orders = [order for order in orders if not is_demo_record(order) and customer_for(db, order) and (user.role == 'OWNER_ADMIN' and order.organization_id == user.organization_id or customer_for(db, order).id == user.id)]
     running_experiments = db.scalar(select(func.count()).select_from(Experiment).where(Experiment.organization_id == user.organization_id, Experiment.status.in_(['PLANNED', 'RUNNING'])))
     titles = {item.id: item.title for item in works}
-    return {'counts': {'contents': len(works), 'analyses': len(analyses), 'orders': len(orders), 'accounts': len(accounts), 'experiments': running_experiments}, 'analyses': [{**serialize(x), 'content_title': titles.get(x.content_id)} for x in analyses[:6]], 'orders': [serialize(x) for x in orders[:5]], 'accounts': [serialize(x) for x in accounts], 'contents': [serialize(x) for x in works[:6]], 'source': '当前工作区真实录入数据；测试记录含 TEST/DEMO 标识'}
+    return {'counts': {'contents': len(works), 'analyses': len(analyses), 'orders': len(orders), 'accounts': len(accounts), 'experiments': running_experiments}, 'analyses': [{**serialize(x), 'content_title': titles.get(x.content_id)} for x in analyses[:6]], 'orders': [serialize(x) for x in orders[:5]], 'accounts': [serialize(x) for x in accounts], 'contents': [serialize(x) for x in works[:6]], 'source': '当前工作区真实录入数据；服务订单按注册客户关联展示'}
 
 
 @router.get('/settings/export')

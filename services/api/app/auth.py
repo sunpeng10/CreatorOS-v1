@@ -67,6 +67,8 @@ def owned(db, model, identifier, user):
 
 
 def issue_session(db, user, response, request=None):
+    from .customer_links import link_email_leads
+    link_email_leads(db, user)
     if request:
         prior = request.cookies.get(COOKIE)
         if prior:

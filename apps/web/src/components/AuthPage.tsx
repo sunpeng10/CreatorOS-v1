@@ -13,7 +13,13 @@ import { Button, Field, Notice } from "./ui";
 export default function AuthPage({ register = false }: { register?: boolean }) {
   const router = useRouter();
   const [hydrated, setHydrated] = useState(false);
-  useEffect(() => setHydrated(true), []);
+  const [returnTo, setReturnTo] = useState("/dashboard");
+  useEffect(() => {
+    const next = new URLSearchParams(window.location.search).get("next") || "";
+    if (next === "/#contact" || /^\/orders(?:\?|$)/.test(next))
+      setReturnTo(next);
+    setHydrated(true);
+  }, []);
   const [busy, setBusy] = useState(false),
     [error, setError] = useState("");
   return (
@@ -70,7 +76,7 @@ export default function AuthPage({ register = false }: { register?: boolean }) {
                   password: f.get("password"),
                   ...(register ? { name: f.get("name") } : {}),
                 });
-                router.push("/dashboard");
+                router.push(returnTo);
                 router.refresh();
               } catch (err) {
                 setError((err as Error).message);
@@ -133,7 +139,9 @@ export default function AuthPage({ register = false }: { register?: boolean }) {
           </form>
           <p className="auth-switch">
             {register ? "已有账号？" : "第一次来到这里？"}{" "}
-            <Link href={register ? "/login" : "/register"}>
+            <Link
+              href={`${register ? "/login" : "/register"}?next=${encodeURIComponent(returnTo)}`}
+            >
               {register ? "立即登录" : "免费创建工作区"}
             </Link>
           </p>

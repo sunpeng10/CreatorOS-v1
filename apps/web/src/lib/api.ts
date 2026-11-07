@@ -41,24 +41,43 @@ export function rows(data: any): Row[] {
       ? data.items
       : [];
 }
-export function useResource<T = any>(path: string | null) {
+export function useResource<T = any>(path: string | null, intervalMs = 0) {
   const [data, setData] = useState<T | null>(null);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(!!path);
-  const refresh = useCallback(async () => {
-    if (!path) return;
-    setLoading(true);
-    setError("");
-    try {
-      setData(await api<T>(path));
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "加载失败");
-    } finally {
-      setLoading(false);
-    }
-  }, [path]);
+  const refresh = useCallback(
+    async (quiet = false) => {
+      if (!path) return;
+      if (!quiet) setLoading(true);
+      setError("");
+      try {
+        setData(await api<T>(path));
+      } catch (e) {
+        if (e instanceof ApiError && [401, 403].includes(e.status))
+          setData(null);
+        setError(e instanceof Error ? e.message : "加载失败");
+      } finally {
+        setLoading(false);
+      }
+    },
+    [path],
+  );
   useEffect(() => {
     void refresh();
   }, [refresh]);
+  useEffect(() => {
+    if (!path || !intervalMs) return;
+    const update = () => {
+      if (document.visibilityState === "visible") void refresh(true);
+    };
+    const timer = window.setInterval(update, intervalMs);
+    window.addEventListener("focus", update);
+    document.addEventListener("visibilitychange", update);
+    return () => {
+      window.clearInterval(timer);
+      window.removeEventListener("focus", update);
+      document.removeEventListener("visibilitychange", update);
+    };
+  }, [path, intervalMs, refresh]);
   return { data, error, loading, refresh };
 }

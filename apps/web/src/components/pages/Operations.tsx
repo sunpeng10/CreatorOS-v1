@@ -1,6 +1,7 @@
 "use client";
 import Link from "next/link";
 import { useState } from "react";
+import { useSearchParams } from "next/navigation";
 import {
   ArrowRight,
   Check,
@@ -18,7 +19,6 @@ import {
   Button,
   Card,
   DataForm,
-  Demo,
   Empty,
   Field,
   JsonDetails,
@@ -42,7 +42,17 @@ function RecordsLoading({
   ) : null;
 }
 export function AdminOverview() {
-  const r = useResource("/admin/overview");
+  const r = useResource("/admin/overview", 15000);
+  const [detail, setDetail] = useState<
+    "leads" | "orders" | "approvals" | "costs" | null
+  >(null);
+  const detailNames = {
+    leads: "客户线索",
+    orders: "服务订单",
+    approvals: "待处理审批",
+    costs: "模型成本估算",
+  };
+  const detailItems = detail ? rows(r.data?.details?.[detail]) : [];
   const d = r.data || {},
     c = d.counts || d;
   return (
@@ -59,24 +69,28 @@ export function AdminOverview() {
           value={formatMetric(c.leads ?? 0)}
           detail="来自真实提交的咨询"
           icon={<Users size={18} />}
+          onClick={() => setDetail("leads")}
         />
         <Stat
           label="服务订单"
           value={formatMetric(c.orders ?? 0)}
-          detail="报价审批后生成"
+          detail="客户下单后由老板接单"
           icon={<ShoppingBag size={18} />}
+          onClick={() => setDetail("orders")}
         />
         <Stat
           label="待处理审批"
           value={formatMetric(c.approvals ?? c.pending_approvals ?? 0)}
           detail="由管理员确认下一步"
           icon={<ShieldCheck size={18} />}
+          onClick={() => setDetail("approvals")}
         />
         <Stat
           label="模型成本估算"
           value={money(d.model_cost_estimate ?? c.model_cost_estimate ?? 0)}
           detail="按配置单价估算，非实付"
           icon={<Wallet size={18} />}
+          onClick={() => setDetail("costs")}
         />
       </div>
       <div className="workspace-banner">
@@ -87,7 +101,7 @@ export function AdminOverview() {
             <br />
             都串起真实的业务记录。
           </h2>
-          <p>客户线索 → 服务报价 → 人工审批 → Demo 订单 → 报告交付</p>
+          <p>注册客户提交需求 → 确认下单 → 老板接单 → 服务交付 → 客户验收</p>
           <Link href="/admin/leads">
             查看客户线索
             <ArrowRight size={17} />
@@ -130,12 +144,52 @@ export function AdminOverview() {
       <Card title="经营数据明细">
         <JsonDetails data={d} title="查看业务统计口径与数据" />
       </Card>
+      {detail && (
+        <Modal
+          title={`${detailNames[detail]} · ${detail === "costs" ? money(d.model_cost_estimate || 0) : `${detailItems.length} 条`}`}
+          className="overview-modal"
+          close={() => setDetail(null)}
+        >
+          <div
+            className="overview-list"
+            tabIndex={0}
+            aria-label={`${detailNames[detail]}明细列表`}
+          >
+            {detailItems.length ? (
+              detailItems.map((item) => (
+                <Link
+                  key={item.id}
+                  className="overview-item"
+                  href={
+                    detail === "costs" ? "/admin/finance" : `/admin/${detail}`
+                  }
+                >
+                  <div className="grow">
+                    <h3>{item.name || item.model || "模型调用"}</h3>
+                    <p>
+                      {item.description ||
+                        `${dateLabel(item.created_at)} · 输入 ${item.input_tokens || 0} / 输出 ${item.output_tokens || 0} tokens`}
+                    </p>
+                  </div>
+                  {detail === "costs" ? (
+                    <Badge>{money(item.estimated_cost)}</Badge>
+                  ) : (
+                    <Status value={item.status} />
+                  )}
+                </Link>
+              ))
+            ) : (
+              <Empty title="暂无对应记录" />
+            )}
+          </div>
+        </Modal>
+      )}
     </>
   );
 }
 
 export function Leads() {
-  const r = useResource("/admin/leads");
+  const r = useResource("/admin/leads", 15000);
   const [edit, setEdit] = useState<Row | null>(null);
   const fields: FormField[] = [
     {
@@ -598,10 +652,15 @@ export function Approvals() {
 }
 
 export function Orders({ admin = false }: { admin?: boolean }) {
-  const r = useResource(admin ? "/admin/orders" : "/orders"),
+  const params = useSearchParams();
+  const r = useResource(admin ? "/admin/orders" : "/orders", 15000),
     quotes = useResource(admin ? "/admin/quotes" : null),
-    analyses = useResource(admin ? "/analyses" : null);
+    analyses = useResource(admin ? "/analyses" : null),
+    services = useResource(admin ? null : "/services");
   const [create, setCreate] = useState(false),
+    [purchase, setPurchase] = useState(!admin && !!params.get("service_id")),
+    [requestId, setRequestId] = useState(""),
+    [completion, setCompletion] = useState<Row | null>(null),
     [delivery, setDelivery] = useState<Row | null>(null),
     [busy, setBusy] = useState(false),
     [error, setError] = useState(""),
@@ -613,6 +672,8 @@ export function Orders({ admin = false }: { admin?: boolean }) {
       await post(path, body);
       setMessage(success);
       setDelivery(null);
+      setCompletion(null);
+      setPurchase(false);
       await r.refresh();
     } catch (e) {
       setError((e as Error).message);
@@ -625,20 +686,27 @@ export function Orders({ admin = false }: { admin?: boolean }) {
       <PageHeading
         eyebrow={admin ? "ORDERS & DELIVERY" : "YOUR SERVICE ORDERS"}
         title={admin ? "从确认需求，到完成交付。" : "服务进度，每一步都清楚。"}
-        description="订单、支付标记、分析报告与验收记录相互关联。Demo 模拟交易与真实收入严格区分。"
+        description="客户确认下单，老板接单后开始服务，交付后由客户验收。订单营收按已接单金额统计。"
         action={
           admin ? (
             <Button onClick={() => setCreate(true)}>
               <Plus size={17} />
               从报价创建订单
             </Button>
-          ) : undefined
+          ) : (
+            <Button
+              onClick={() => {
+                setRequestId(crypto.randomUUID());
+                setPurchase(true);
+              }}
+            >
+              <Plus size={17} />
+              选购服务
+            </Button>
+          )
         }
       />
-      <Notice tone="warning">
-        当前仅提供 DEMO
-        模拟支付，不能作为实际付款、发票或交易凭证。真实支付服务尚未配置。
-      </Notice>
+      <Notice>当前记录真实客户的服务订单与处理进度，尚未接入资金支付。</Notice>
       {error && <Notice tone="error">{error}</Notice>}
       {message && <Notice tone="success">{message}</Notice>}
       <RecordsLoading resource={r} />
@@ -650,13 +718,16 @@ export function Orders({ admin = false }: { admin?: boolean }) {
                 <div className="grow">
                   <div className="row-actions">
                     <h3>{o.title || `服务订单 ${o.id.slice(0, 8)}`}</h3>
-                    <Demo value={o.is_demo} />
                     <Status value={o.status} />
                   </div>
                   <p>
                     金额 {money(o.amount)} · 报价 {o.quote_id?.slice(0, 8)} ·{" "}
                     {dateLabel(o.created_at)}
                   </p>
+                  {o.need && <p className="pre-wrap">{o.need}</p>}
+                  {o.delivery_note && (
+                    <p className="pre-wrap">交付说明：{o.delivery_note}</p>
+                  )}
                   {o.delivery?.analysis_id && (
                     <Link
                       href={`/analyses/${o.delivery.analysis_id}`}
@@ -687,43 +758,61 @@ export function Orders({ admin = false }: { admin?: boolean }) {
                   <JsonDetails data={o} title="订单与交付记录" />
                 </div>
                 <div className="order-actions">
-                  {admin &&
-                    ["AWAITING_PAYMENT", "PENDING_PAYMENT", "CREATED"].includes(
-                      o.status,
-                    ) && (
-                      <Button
-                        busy={busy}
-                        variant="secondary"
-                        onClick={() =>
-                          action(
-                            `/admin/orders/${o.id}/simulate-payment`,
-                            {},
-                            "DEMO 模拟支付已记录，不代表真实收款。",
-                          )
-                        }
-                      >
-                        DEMO 模拟支付
-                      </Button>
-                    )}
-                  {admin && o.status === "PAID" && (
-                    <Button onClick={() => setDelivery(o)}>交付分析报告</Button>
+                  {admin && o.status === "REQUESTED" && (
+                    <Button
+                      busy={busy}
+                      variant="secondary"
+                      onClick={() =>
+                        action(
+                          `/admin/orders/${o.id}/accept`,
+                          {},
+                          "已接单，订单金额已计入订单营收。",
+                        )
+                      }
+                    >
+                      接单并开始服务
+                    </Button>
                   )}
-                  {o.status === "DELIVERED" &&
-                    (!admin || !o.customer_organization_id) && (
+                  {admin && o.status === "IN_PROGRESS" && (
+                    <>
+                      <Button onClick={() => setCompletion(o)}>完成服务</Button>
                       <Button
-                        busy={busy}
-                        onClick={() =>
-                          action(
-                            `/orders/${o.id}/accept`,
-                            {},
-                            "报告已验收，订单完成。",
-                          )
-                        }
+                        variant="secondary"
+                        onClick={() => setDelivery(o)}
                       >
-                        <Check size={16} />
-                        确认验收
+                        交付分析报告
                       </Button>
-                    )}
+                    </>
+                  )}
+                  {!admin && o.status === "AWAITING_CUSTOMER" && (
+                    <Button
+                      busy={busy}
+                      onClick={() =>
+                        void action(
+                          `/orders/${o.id}/confirm`,
+                          {},
+                          "已确认下单，等待老板接单。",
+                        )
+                      }
+                    >
+                      确认下单
+                    </Button>
+                  )}
+                  {o.status === "DELIVERED" && !admin && (
+                    <Button
+                      busy={busy}
+                      onClick={() =>
+                        action(
+                          `/orders/${o.id}/accept`,
+                          {},
+                          "报告已验收，订单完成。",
+                        )
+                      }
+                    >
+                      <Check size={16} />
+                      确认验收
+                    </Button>
+                  )}
                 </div>
               </div>
             ))}
@@ -732,13 +821,15 @@ export function Orders({ admin = false }: { admin?: boolean }) {
           <Empty title="尚未创建服务订单">
             {admin
               ? "先创建报价并完成审批，即可生成一笔可追踪的订单。"
-              : "工作区研究功能可直接使用。需要咨询服务时，请从官网提交需求。"}
+              : "点击“选购服务”选择服务并填写需求，提交后可在这里查看进度。"}
           </Empty>
         )}
       </Card>
       {create && (
         <Modal title="从已批准报价创建订单" close={() => setCreate(false)}>
-          <Notice>本地演示订单会明确标记 DEMO，不会调用真实支付服务。</Notice>
+          <Notice>
+            订单发送给对应客户，待客户确认下单后才能接单计入营收。
+          </Notice>
           <DataForm
             endpoint="/admin/orders"
             fields={[
@@ -747,7 +838,7 @@ export function Orders({ admin = false }: { admin?: boolean }) {
                 label: "选择已批准报价",
                 required: true,
                 options: rows(quotes.data)
-                  .filter((q) => q.status === "APPROVED")
+                  .filter((q) => q.status === "APPROVED" && q.customer_user_id)
                   .map((q) => ({
                     value: q.id,
                     label: `${q.id.slice(0, 8)} · ${money(q.amount)} · ${q.scope || "服务报价"}`,
@@ -758,7 +849,89 @@ export function Orders({ admin = false }: { admin?: boolean }) {
               setCreate(false);
               void r.refresh();
             }}
-            submit="创建 DEMO 订单"
+            submit="发送订单给客户"
+          />
+        </Modal>
+      )}
+      {purchase && (
+        <Modal title="选择服务并确认下单" close={() => setPurchase(false)}>
+          <form
+            className="stack"
+            method="post"
+            onSubmit={(event) => {
+              event.preventDefault();
+              const form = new FormData(event.currentTarget);
+              const id = requestId || crypto.randomUUID();
+              setRequestId(id);
+              void action(
+                "/orders",
+                {
+                  service_id: form.get("service_id"),
+                  need: form.get("need"),
+                  request_id: id,
+                },
+                "下单成功，等待老板接单。需求与后续回复可在服务与反馈查看。",
+              );
+            }}
+          >
+            <Field label="服务方案">
+              <select
+                name="service_id"
+                required
+                defaultValue={params.get("service_id") || ""}
+              >
+                <option value="">请选择服务</option>
+                {rows(services.data).map((service) => (
+                  <option key={service.id} value={service.id}>
+                    {service.name} · {money(service.price)}
+                  </option>
+                ))}
+              </select>
+            </Field>
+            <Field label="服务需求">
+              <textarea
+                name="need"
+                required
+                maxLength={6000}
+                rows={5}
+                placeholder="请说明希望解决的问题和预期结果"
+              />
+            </Field>
+            <Notice>
+              确认后生成服务订单，老板接单后开始处理；当前尚未接入资金支付。
+            </Notice>
+            {error && <Notice tone="error">{error}</Notice>}
+            {services.error && <Notice tone="error">{services.error}</Notice>}
+            <Button
+              type="submit"
+              busy={busy}
+              disabled={services.loading || !rows(services.data).length}
+            >
+              确认下单
+            </Button>
+          </form>
+        </Modal>
+      )}
+      {completion && (
+        <Modal
+          title={`完成服务 · ${completion.title}`}
+          close={() => setCompletion(null)}
+        >
+          <DataForm
+            endpoint={`/admin/orders/${completion.id}/complete`}
+            fields={[
+              {
+                name: "note",
+                label: "交付说明 / 咨询结果",
+                type: "textarea",
+                required: true,
+              },
+            ]}
+            submit="交付给客户验收"
+            onDone={() => {
+              setCompletion(null);
+              void r.refresh();
+            }}
           />
         </Modal>
       )}

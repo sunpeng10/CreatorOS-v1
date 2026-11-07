@@ -19,7 +19,8 @@ import { rows, useResource } from "@/lib/api";
 import { money } from "@/lib/format";
 import { DataForm, Notice } from "./ui";
 export default function Landing() {
-  const services = useResource("/services");
+  const services = useResource("/services"),
+    me = useResource("/auth/me");
   return (
     <div className="landing">
       <header className="site-nav">
@@ -279,13 +280,17 @@ export default function Landing() {
                     {s.description ||
                       "具体分析范围与交付内容由工作区管理员确认。"}
                   </p>
-                  <a
+                  <Link
                     className={`btn ${i === 1 ? "btn-primary" : "btn-secondary"}`}
-                    href="#contact"
+                    href={
+                      me.data
+                        ? `/orders?service_id=${s.id}`
+                        : `/login?next=${encodeURIComponent(`/orders?service_id=${s.id}`)}`
+                    }
                   >
-                    咨询此服务
+                    选择此服务
                     <ArrowRight size={16} />
-                  </a>
+                  </Link>
                 </article>
               ))
             ) : (
@@ -318,37 +323,51 @@ export default function Landing() {
               <br />
               提交后会生成真实的咨询记录。
               <br />
-              登录后提交可在“服务与反馈”查看回复；未登录留资需人工联系。
+              使用客户账号提交后，需求状态与回复会同步到“服务与反馈”。
             </p>
             <span className="privacy-note">
               <LockKeyhole size={16} /> 仅用于回应本次咨询，不公开你的联系方式。
             </span>
           </div>
-          <DataForm
-            endpoint="/leads"
-            fields={[
-              {
-                name: "contact",
-                label: "联系方式",
-                required: true,
-                placeholder: "邮箱 / 微信 / 手机",
-              },
-              {
-                name: "need",
-                label: "你希望解决的问题",
-                type: "textarea",
-                required: true,
-                placeholder: "例如：如何把编程教程的开头讲得更清楚？",
-              },
-              {
-                name: "campaign",
-                label: "如何了解到我们",
-                defaultValue: "官网",
-                placeholder: "活动 / 朋友推荐 / 其他",
-              },
-            ]}
-            submit="发送咨询"
-          />
+          {me.data?.role === "CLIENT_USER" ? (
+            <DataForm
+              endpoint="/leads"
+              initial={{ contact: me.data.email }}
+              fields={[
+                {
+                  name: "contact",
+                  label: "联系方式",
+                  required: true,
+                  placeholder: "邮箱 / 微信 / 手机",
+                },
+                {
+                  name: "need",
+                  label: "你希望解决的问题",
+                  type: "textarea",
+                  required: true,
+                  placeholder: "例如：如何把编程教程的开头讲得更清楚？",
+                },
+                {
+                  name: "campaign",
+                  label: "如何了解到我们",
+                  defaultValue: "官网",
+                  placeholder: "活动 / 朋友推荐 / 其他",
+                },
+              ]}
+              submit="发送咨询"
+            />
+          ) : (
+            <Notice>
+              请先登录客户账号，再提交需求或选择服务。
+              <br />
+              <Link className="text-link" href="/login?next=%2F%23contact">
+                登录后提交需求
+              </Link>
+              <Link className="text-link" href="/register?next=%2F%23contact">
+                注册客户账号
+              </Link>
+            </Notice>
+          )}
         </section>
         <section className="faq-section">
           <h2>开始前，你可能想知道</h2>

@@ -1652,6 +1652,67 @@ tr:last-child td {
   font-size: 10px;
   color: #8c9b80;
 }
+.stat-interactive {
+  width: 100%;
+  text-align: left;
+  color: inherit;
+  font-family: inherit;
+  cursor: pointer;
+  transition:
+    transform 160ms ease,
+    box-shadow 160ms ease,
+    border-color 160ms ease;
+}
+.stat-interactive:hover {
+  transform: translateY(-4px);
+  border-color: #96b386;
+  box-shadow: 0 8px 22px #183e2314;
+}
+.stat-interactive:focus-visible {
+  outline: 2px solid #137c66;
+  outline-offset: 3px;
+}
+.modal.overview-modal {
+  width: 860px;
+}
+.overview-list {
+  max-height: min(60vh, 560px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+.overview-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 18px;
+  padding: 18px 8px;
+  border-bottom: 1px solid #e6ebe3;
+  border-radius: 6px;
+}
+.overview-item:hover {
+  background: #f4f8ef;
+}
+.overview-item h3 {
+  font-size: 14px;
+  overflow-wrap: anywhere;
+}
+.overview-item p {
+  margin-top: 6px;
+  color: #82917a;
+  font-size: 12px;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+}
+@media (prefers-reduced-motion: reduce) {
+  .stat-interactive {
+    transition: none;
+  }
+  .stat-interactive:hover {
+    transform: none;
+  }
+}
 .stat-top > span {
   color: #92aa7d;
 }
