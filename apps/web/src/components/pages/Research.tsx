@@ -97,32 +97,21 @@ function AccountForm({
     account && !known
       ? { ...account, platform: "其他", platform_notes: account.platform }
       : account || {};
-  return (
-    <DataForm
-      fields={accountFields}
-      initial={initial}
-      endpoint={savedId ? `/accounts/${savedId}` : "/accounts"}
-      method={savedId ? "PATCH" : "POST"}
-      onSaved={async (record) => {
-        setSavedId(record.id);
-        if (avatarError) throw new Error(avatarError);
-        if (avatar) {
-          const form = new FormData();
-          form.append("file", avatar);
-          await post(`/accounts/${record.id}/avatar`, form);
-        }
-      }}
-      onDone={onDone}
-    >
-      <Field
-        label="账号头像"
-        hint="JPG / PNG / WebP，最多 2 MB；保存后显示在档案卡片。"
+  const avatarField = (
+    <Field label="账号头像" hint="JPG / PNG / WebP，最多 2 MB">
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 12,
+          minHeight: 46,
+        }}
       >
         {(preview || account?.has_avatar) && (
           <img
-            width={64}
-            height={64}
-            style={{ borderRadius: "50%", objectFit: "cover" }}
+            width={48}
+            height={48}
+            style={{ borderRadius: "50%", objectFit: "cover", flexShrink: 0 }}
             src={
               preview ||
               `/api/accounts/${account!.id}/avatar?v=${account!.avatar_version}`
@@ -132,6 +121,7 @@ function AccountForm({
         )}
         <input
           type="file"
+          style={{ minWidth: 0, width: "100%" }}
           accept=".jpg,.jpeg,.png,.webp"
           onChange={(event) => {
             const file = event.target.files?.[0] || null;
@@ -146,7 +136,27 @@ function AccountForm({
             setPreview(file ? URL.createObjectURL(file) : "");
           }}
         />
-      </Field>
+      </div>
+    </Field>
+  );
+  return (
+    <DataForm
+      fields={accountFields}
+      fieldAfter={{ persona: avatarField }}
+      initial={initial}
+      endpoint={savedId ? `/accounts/${savedId}` : "/accounts"}
+      method={savedId ? "PATCH" : "POST"}
+      onSaved={async (record) => {
+        setSavedId(record.id);
+        if (avatarError) throw new Error(avatarError);
+        if (avatar) {
+          const form = new FormData();
+          form.append("file", avatar);
+          await post(`/accounts/${record.id}/avatar`, form);
+        }
+      }}
+      onDone={onDone}
+    >
       {avatarError && <Notice tone="error">{avatarError}</Notice>}
     </DataForm>
   );

@@ -1,5 +1,10 @@
 "use client";
-import { type ButtonHTMLAttributes, type ReactNode, useState } from "react";
+import {
+  Fragment,
+  type ButtonHTMLAttributes,
+  type ReactNode,
+  useState,
+} from "react";
 import Link from "next/link";
 import {
   AlertCircle,
@@ -276,6 +281,7 @@ export function DataForm({
   endpoint,
   onDone,
   onSaved,
+  fieldAfter,
   initial = {},
   method = "POST",
   submit = "保存",
@@ -285,6 +291,7 @@ export function DataForm({
   endpoint: string;
   onDone?: () => void;
   onSaved?: (record: Row) => Promise<void>;
+  fieldAfter?: Record<string, ReactNode>;
   initial?: Record<string, any>;
   method?: string;
   submit?: string;
@@ -325,40 +332,43 @@ export function DataForm({
     >
       <div className="form-grid">
         {fields.map((field) => (
-          <Field key={field.name} label={field.label} hint={field.hint}>
-            {field.options ? (
-              <select
-                name={field.name}
-                required={field.required}
-                defaultValue={initial[field.name] ?? field.defaultValue ?? ""}
-              >
-                {!field.required && <option value="">请选择</option>}
-                {field.options.map((x) => (
-                  <option key={x.value} value={x.value}>
-                    {x.label}
-                  </option>
-                ))}
-              </select>
-            ) : field.type === "textarea" ? (
-              <textarea
-                name={field.name}
-                required={field.required}
-                defaultValue={initial[field.name] ?? field.defaultValue ?? ""}
-                placeholder={field.placeholder}
-                rows={4}
-              />
-            ) : (
-              <input
-                name={field.name}
-                type={field.type || "text"}
-                min={field.type === "number" ? 0 : undefined}
-                step={field.type === "number" ? "any" : undefined}
-                required={field.required}
-                defaultValue={initial[field.name] ?? field.defaultValue ?? ""}
-                placeholder={field.placeholder}
-              />
-            )}
-          </Field>
+          <Fragment key={field.name}>
+            <Field label={field.label} hint={field.hint}>
+              {field.options ? (
+                <select
+                  name={field.name}
+                  required={field.required}
+                  defaultValue={initial[field.name] ?? field.defaultValue ?? ""}
+                >
+                  {!field.required && <option value="">请选择</option>}
+                  {field.options.map((x) => (
+                    <option key={x.value} value={x.value}>
+                      {x.label}
+                    </option>
+                  ))}
+                </select>
+              ) : field.type === "textarea" ? (
+                <textarea
+                  name={field.name}
+                  required={field.required}
+                  defaultValue={initial[field.name] ?? field.defaultValue ?? ""}
+                  placeholder={field.placeholder}
+                  rows={4}
+                />
+              ) : (
+                <input
+                  name={field.name}
+                  type={field.type || "text"}
+                  min={field.type === "number" ? 0 : undefined}
+                  step={field.type === "number" ? "any" : undefined}
+                  required={field.required}
+                  defaultValue={initial[field.name] ?? field.defaultValue ?? ""}
+                  placeholder={field.placeholder}
+                />
+              )}
+            </Field>
+            {fieldAfter?.[field.name]}
+          </Fragment>
         ))}
       </div>
       {children}
