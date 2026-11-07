@@ -405,7 +405,7 @@ export function AnalysisReport({ id }: { id: string }) {
         eyebrow="CONTENT RESEARCH / REPORT"
         title={content.data?.title || data.title || "内容研究报告"}
         description={`${dateLabel(data.created_at)} · ${label(data.mode)} · 报告 ID ${id.slice(0, 8)}`}
-        action={
+        action={data.status === "SUCCEEDED" ? (
           <div className="row-actions no-print">
             <a
               className="btn btn-secondary"
@@ -427,7 +427,7 @@ export function AnalysisReport({ id }: { id: string }) {
               打印
             </Button>
           </div>
-        }
+        ) : undefined}
       />
       <div className="report-status">
         <Status value={data.status} />
@@ -450,7 +450,7 @@ export function AnalysisReport({ id }: { id: string }) {
             取消任务
           </Button>
         )}
-        {data.task_id && ["FAILED", "CANCELED"].includes(data.status) && (
+        {data.task_id && data.status === "FAILED" && (
           <Button busy={busy} onClick={() => taskAction("retry")}>
             <RefreshCw size={15} />
             从失败步骤重试
@@ -458,9 +458,14 @@ export function AnalysisReport({ id }: { id: string }) {
         )}
       </div>
       {error && <Notice tone="error">{error}</Notice>}
-      {data.error && <Notice tone="error">{data.error}</Notice>}
+      {(data.error || data.task?.error) && (
+        <Notice tone="error">{data.error || data.task.error}</Notice>
+      )}
       {message && <Notice tone="success">{message}</Notice>}
-      {!["SUCCEEDED", "FAILED", "CANCELED"].includes(data.status) && (
+      {data.status === "WAITING_APPROVAL" && (
+        <Notice tone="warning">任务已暂停，等待老板后台人工复核。</Notice>
+      )}
+      {["QUEUED", "RUNNING"].includes(data.status) && (
         <Notice>
           研究任务正在推进，页面会自动更新。已完成的阶段会保留，取消操作可能仍产生正在进行的调用费用。
         </Notice>
@@ -686,6 +691,10 @@ export function AnalysisReport({ id }: { id: string }) {
       ) : data.status === "FAILED" ? (
         <Empty title="分析尚未生成报告">
           查看上方错误信息，修正素材或配置后重试。
+        </Empty>
+      ) : data.status === "CANCELED" ? (
+        <Empty title="分析已取消">
+          如需继续研究，请从内容分析页新建任务。
         </Empty>
       ) : (
         <Empty title="报告将在任务完成后显示">

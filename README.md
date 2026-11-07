@@ -26,9 +26,9 @@ Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 
 ## 开发与验收
 
-`apps/web` 是 Next.js 工作台，`services/api` 是 FastAPI、SQLAlchemy 和 Alembic，`data` 保存数据库、私有素材和运行日志，`scripts` 提供 Windows 启停和测试。`.\scripts\test.ps1` 执行 API、前端单测、lint、类型检查和构建。`-Browser` 再执行 Edge/Chrome 验收，需先启动服务。用于验收的视频可用 `.\.venv\Scripts\python.exe scripts\generate_fixtures.py` 生成。
+`apps/web` 是 Next.js 工作台，`services/api` 是 FastAPI、SQLAlchemy 和 Alembic，`data` 保存数据库、私有素材和运行日志，`scripts` 提供 Windows 启停和测试。`.\scripts\test.ps1` 执行 API、前端单测、lint、类型检查和构建。服务运行时可执行 `.\scripts\test.ps1 -Browser`，运行相同检查并以 Edge 验收当前构建。该模式跳过重新构建，避免影响运行中的服务。用于验收的视频可用 `.\.venv\Scripts\python.exe scripts\generate_fixtures.py` 生成。
 
-浏览器验收优先使用本机 Codex 自带的 Playwright。在没有该运行时的机器上，从项目根目录执行 `npm install --no-save --prefix scripts playwright@1.62.1`。可以用 `CREATOROS_EDGE` 和 `CREATOROS_CHROME` 指定浏览器 exe。默认测试只跑本地分析，显式设置 `CREATOROS_E2E_MIMO=1` 才会通过 Chrome 的 AI 同意和预算界面调用真实 MiMo。
+浏览器验收优先使用本机 Codex 自带的 Playwright。在没有该运行时的机器上，从项目根目录执行 `npm install --no-save --prefix scripts playwright@1.62.1`。可用 `CREATOROS_EDGE` 和 `CREATOROS_CHROME` 指定浏览器 exe，通过 `CREATOROS_BROWSER` 切换浏览器。默认测试只跑本地分析。
 
 需要关闭进程再复制 `data/creatoros.db` 与 `data/uploads`，或使用 SQLite 一致性备份。恢复前先备份当前副本。`.env` 和本地随机账号凭证应单独保管。上传文件经过签名和解码校验，本地版本没有集成防病毒扫描。切换 PostgreSQL 时使用 `postgresql+psycopg://…` 并重新执行 Alembic，现有 SQLite 数据迁移需另行完成。
 
