@@ -17,7 +17,13 @@ import {
   X,
 } from "lucide-react";
 import { post, rows, useResource, type Row } from "@/lib/api";
-import { dateLabel, label, money, validateFiles } from "@/lib/format";
+import {
+  analysisLabel,
+  dateLabel,
+  label,
+  money,
+  validateFiles,
+} from "@/lib/format";
 import {
   Badge,
   Button,
@@ -330,9 +336,7 @@ export function Analyze() {
             {rows(history.data).map((a) => (
               <Link className="record" key={a.id} href={`/analyses/${a.id}`}>
                 <div>
-                  <h3>
-                    {a.title || a.content_title || `分析 ${a.id.slice(0, 8)}`}
-                  </h3>
+                  <h3>{analysisLabel(a)}</h3>
                   <p>
                     {dateLabel(a.created_at)} · {label(a.mode)}
                   </p>

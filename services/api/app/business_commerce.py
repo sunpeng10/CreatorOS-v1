@@ -4,7 +4,7 @@ from decimal import Decimal
 import re
 
 from fastapi import APIRouter, BackgroundTasks, Body, Depends, Request
-from sqlalchemy import select
+from sqlalchemy import and_, or_, select
 from sqlalchemy.orm import Session
 
 from .auth import current_user, optional_user, owned, require_admin
@@ -39,7 +39,8 @@ def accessible_order(db, order_id, user):
 def order_view(db, order):
     deliveries = db.scalars(select(Delivery).where(Delivery.organization_id == order.organization_id, Delivery.order_id == order.id).order_by(Delivery.created_at)).all()
     payment = db.scalar(select(PaymentRecord).where(PaymentRecord.organization_id == order.organization_id, PaymentRecord.order_id == order.id))
-    return {**serialize(order), "deliveries": [serialize(item) for item in deliveries], "payment": serialize(payment) if payment else None, "payment_notice": "DEMO 模拟交易，未收取真实款项" if order.is_demo else "真实支付未配置"}
+    ticket_count = len(list(db.scalars(select(Ticket.id).where(Ticket.organization_id == order.organization_id, Ticket.order_id == order.id))))
+    return {**serialize(order), "deliveries": [serialize(item) for item in deliveries], "ticket_count": ticket_count, "payment": serialize(payment) if payment else None, "payment_notice": "DEMO 模拟交易，未收取真实款项" if order.is_demo else "真实支付未配置"}
 
 
 @router.post("/leads")
@@ -99,6 +100,21 @@ def get_lead(lead_id: str, db: Session = Depends(get_db), user: User = Depends(r
 @router.patch("/admin/leads/{lead_id}")
 def edit_lead(lead_id: str, body: dict = Body(...), db: Session = Depends(get_db), user: User = Depends(require_admin)):
     lead = owned(db, Lead, lead_id, user)
+    if body.get('customer_reply'):
+        reply = required(body, 'customer_reply', 6000)
+        recipient = db.get(User, (lead.data or {}).get('customer_user_id')) if (lead.data or {}).get('customer_user_id') else None
+        if not recipient or recipient.organization_id != (lead.data or {}).get('customer_organization_id'):
+            fail('此线索未关联登录客户，无法站内回复。请通过客户提供的联系方式人工联系。')
+        ticket = db.scalar(select(Ticket).where(Ticket.organization_id == user.organization_id, Ticket.data['lead_id'].as_string() == lead.id))
+        if ticket and (ticket.data or {}).get('customer_organization_id') != recipient.organization_id:
+            fail('线索与工单客户不匹配', 409)
+        if not ticket:
+            ticket = Ticket(organization_id=user.organization_id, subject=f'需求跟进·{lead.need[:80]}', status='IN_PROGRESS', data={**customer_fields(lead), 'lead_id': lead.id, 'kind': 'QUESTION', 'description': lead.need, 'timeline': []})
+            db.add(ticket)
+            db.flush()
+        update_data(ticket, {'reply': reply, 'timeline': [*(ticket.data or {}).get('timeline', []), {'at': stamp(), 'actor_id': user.id, 'role': 'OWNER_ADMIN', 'note': reply}][-100:]})
+        update_data(lead, {'customer_ticket_id': ticket.id})
+        audit(db, user, 'lead.customer_replied', ticket.id, {'lead_id': lead.id})
     if "status" in body:
         if body["status"] not in {"NEW", "QUALIFIED", "PROPOSAL", "WON", "LOST"}:
             fail("无效线索状态")
@@ -260,6 +276,10 @@ def deliver_order(order_id: str, body: dict = Body(...), db: Session = Depends(g
 
 def accessible_ticket(db, ticket_id, user):
     ticket = db.get(Ticket, ticket_id)
+    if ticket and ticket.order_id:
+        order = db.get(Order, ticket.order_id)
+        if order and ticket.organization_id == order.organization_id and (order.data or {}).get('customer_organization_id') == user.organization_id:
+            return ticket
     if not ticket or (ticket.organization_id != user.organization_id and (ticket.data or {}).get("customer_organization_id") != user.organization_id):
         fail("记录不存在或无权访问", 404)
     return ticket
@@ -267,7 +287,9 @@ def accessible_ticket(db, ticket_id, user):
 
 @router.get("/tickets")
 def tickets(db: Session = Depends(get_db), user: User = Depends(current_user)):
-    items = [item for item in db.scalars(select(Ticket).order_by(Ticket.created_at.desc())) if item.organization_id == user.organization_id or (item.data or {}).get("customer_organization_id") == user.organization_id]
+    items = list(db.scalars(select(Ticket).outerjoin(Order, and_(Ticket.order_id == Order.id, Ticket.organization_id == Order.organization_id))
+                           .where(or_(Ticket.organization_id == user.organization_id, Ticket.data['customer_organization_id'].as_string() == user.organization_id,
+                                      Order.data['customer_organization_id'].as_string() == user.organization_id)).order_by(Ticket.created_at.desc())))
     return listing(items)
 
 
@@ -279,7 +301,8 @@ def create_ticket(body: dict = Body(...), db: Session = Depends(get_db), user: U
         fail("工单类型无效")
     owner = company_owner(db) if user.role != "OWNER_ADMIN" and not order else user
     organization_id = order.organization_id if order else owner.organization_id
-    data = {"kind": kind, "description": str(body.get("description") or "")[:6000], "customer_user_id": user.id, "customer_organization_id": user.organization_id, "timeline": [{"at": stamp(), "actor_id": user.id, "event": "创建工单"}]}
+    recipient = customer_fields(order) if order and user.role == 'OWNER_ADMIN' else {'customer_user_id': user.id, 'customer_organization_id': user.organization_id}
+    data = {"kind": kind, "description": str(body.get("description") or "")[:6000], **recipient, "timeline": [{"at": stamp(), "actor_id": user.id, "role": user.role, "event": "创建工单"}]}
     ticket = Ticket(organization_id=organization_id, order_id=order.id if order else None, subject=required(body, "subject", 300), status="WAITING_APPROVAL" if kind == "REFUND" else "OPEN", data=data)
     db.add(ticket); db.flush()
     if kind == "REFUND":
@@ -301,8 +324,12 @@ def edit_ticket(ticket_id: str, body: dict = Body(...), db: Session = Depends(ge
         if user.role != "OWNER_ADMIN" and body["status"] not in {"OPEN", "CLOSED"}:
             fail("客户只能重开或关闭自己的工单", 403)
         ticket.status = body["status"]
-    timeline = [*(ticket.data or {}).get("timeline", []), {"at": stamp(), "actor_id": user.id, "status": ticket.status, "note": str(body.get("note") or body.get("reply") or "更新状态")[:6000]}][-100:]
-    update_data(ticket, {"timeline": timeline})
+    reply = str(body.get('note') or body.get('reply') or '')[:6000]
+    timeline = [*(ticket.data or {}).get("timeline", []), {"at": stamp(), "actor_id": user.id, "role": user.role, "status": ticket.status, "note": reply or '更新状态'}][-100:]
+    changes = {'timeline': timeline}
+    if user.role == 'OWNER_ADMIN' and reply:
+        changes['reply'] = reply
+    update_data(ticket, changes)
     db.add(AuditLog(organization_id=ticket.organization_id, actor_id=user.id, action="ticket.updated", target_id=ticket.id))
     db.commit()
     return serialize(ticket)

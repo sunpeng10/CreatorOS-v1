@@ -317,6 +317,8 @@ export default function Landing() {
               告诉我们你的创作方向和当前问题。
               <br />
               提交后会生成真实的咨询记录。
+              <br />
+              登录后提交可在“服务与反馈”查看回复；未登录留资需人工联系。
             </p>
             <span className="privacy-note">
               <LockKeyhole size={16} /> 仅用于回应本次咨询，不公开你的联系方式。

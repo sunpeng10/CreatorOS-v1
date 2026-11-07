@@ -275,6 +275,7 @@ export function DataForm({
   fields,
   endpoint,
   onDone,
+  onSaved,
   initial = {},
   method = "POST",
   submit = "保存",
@@ -283,6 +284,7 @@ export function DataForm({
   fields: FormField[];
   endpoint: string;
   onDone?: () => void;
+  onSaved?: (record: Row) => Promise<void>;
   initial?: Record<string, any>;
   method?: string;
   submit?: string;
@@ -309,7 +311,8 @@ export function DataForm({
         setError("");
         setSuccess("");
         try {
-          await post(endpoint, data, method);
+          const record = await post(endpoint, data, method);
+          await onSaved?.(record);
           setSuccess("已保存到工作区。");
           onDone?.();
           if (method === "POST") form.reset();

@@ -11,7 +11,7 @@ import {
   Users,
 } from "lucide-react";
 import { rows, useResource } from "@/lib/api";
-import { dateLabel, formatMetric } from "@/lib/format";
+import { analysisLabel, dateLabel, formatMetric } from "@/lib/format";
 import {
   Card,
   Empty,
@@ -116,7 +116,7 @@ export default function Dashboard() {
                       <FileText size={20} />
                     </div>
                     <div className="grow">
-                      <h3>{a.title || a.content_title || "内容研究报告"}</h3>
+                      <h3>{analysisLabel(a)}</h3>
                       <p>
                         {dateLabel(a.created_at)} ·{" "}
                         {a.mode === "ai" ? "MiMo AI" : "本地基础分析"}

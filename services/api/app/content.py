@@ -154,7 +154,8 @@ def dashboard(user: User = Depends(current_user), db: Session = Depends(get_db))
     analyses, accounts, works = rows(ContentAnalysis), rows(CreatorAccount), rows(ContentItem)
     orders = list(db.scalars(select(Order).where(or_(Order.organization_id == user.organization_id, Order.data['customer_organization_id'].as_string() == user.organization_id)).order_by(Order.created_at.desc())))
     running_experiments = db.scalar(select(func.count()).select_from(Experiment).where(Experiment.organization_id == user.organization_id, Experiment.status.in_(['PLANNED', 'RUNNING'])))
-    return {'counts': {'contents': len(works), 'analyses': len(analyses), 'orders': len(orders), 'accounts': len(accounts), 'experiments': running_experiments}, 'analyses': [serialize(x) for x in analyses[:6]], 'orders': [serialize(x) for x in orders[:5]], 'accounts': [serialize(x) for x in accounts], 'contents': [serialize(x) for x in works[:6]], 'source': '当前工作区真实录入数据；测试记录含 TEST/DEMO 标识'}
+    titles = {item.id: item.title for item in works}
+    return {'counts': {'contents': len(works), 'analyses': len(analyses), 'orders': len(orders), 'accounts': len(accounts), 'experiments': running_experiments}, 'analyses': [{**serialize(x), 'content_title': titles.get(x.content_id)} for x in analyses[:6]], 'orders': [serialize(x) for x in orders[:5]], 'accounts': [serialize(x) for x in accounts], 'contents': [serialize(x) for x in works[:6]], 'source': '当前工作区真实录入数据；测试记录含 TEST/DEMO 标识'}
 
 
 @router.get('/settings/export')

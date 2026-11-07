@@ -47,3 +47,12 @@ def test_image_album_preserves_order_and_checks_dimensions(client):
     assert payload['kind'] == 'album'
     assert [item['position'] for item in payload['assets']] == [0, 1]
     assert [item['metadata']['width'] for item in payload['assets']] == [12, 15]
+
+
+def test_requested_analysis_title_is_available_for_existing_lists(client):
+    client.post('/api/auth/register', json={'email': 'titles@example.test', 'password': 'Test-Password-482!', 'name': 'TEST'})
+    content = client.post('/api/contents', json={'title': '雅思口语', 'text': 'TEST'}).json()
+    analysis = client.post('/api/analyses', json={'content_id': content['id'], 'mode': 'ai'}).json()
+    assert analysis['content_title'] == '雅思口语'
+    assert client.get('/api/analyses').json()['items'][0]['content_title'] == '雅思口语'
+    assert client.get('/api/dashboard').json()['analyses'][0]['content_title'] == '雅思口语'

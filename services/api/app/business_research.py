@@ -6,6 +6,7 @@ import json
 import math
 import re
 import zipfile
+from uuid import uuid4
 from collections import Counter, defaultdict
 from datetime import date, datetime
 from statistics import median
@@ -13,23 +14,32 @@ from urllib.parse import urlsplit, urlunsplit
 from xml.etree.ElementTree import ParseError
 
 from fastapi import APIRouter, Body, Depends, File, Form, UploadFile
+from fastapi.responses import FileResponse
+from PIL import Image, ImageOps, UnidentifiedImageError
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .auth import current_user, owned
-from .db import get_db
+from .db import DATA_DIR, get_db
 from .models import (BenchmarkItem, ContentAnalysis, ContentItem, ContentVersion,
                      CreatorAccount, Experiment, MetricSnapshot, Recommendation,
                      User, serialize, stamp)
 from .business_common import audit, extras, fail, listing, required, rows, save, update_data
 
 router = APIRouter(tags=["research"])
+AVATAR_DIR = DATA_DIR / 'account-avatars'
 METRICS = ("views", "likes", "comments", "shares", "favorites", "impressions", "followers")
 ALIASES = {"标题": "title", "作品标题": "title", "播放量": "views", "阅读量": "views", "点赞": "likes", "点赞数": "likes", "评论": "comments", "转发": "shares", "收藏": "favorites", "曝光量": "impressions", "粉丝数": "followers", "观测日期": "observed_at", "日期": "observed_at", "分类": "category", "平台": "platform", "作者": "author", "链接": "url"}
 
 
-def account_details(body):
-    details = extras(body, ["category", "persona", "audience", "style", "description"])
+def account_details(body, account=None):
+    details = extras(body, ["category", "persona", "audience", "style", "description", "platform_notes"])
+    platform = body.get('platform', account.platform if account else '')
+    if platform == '其他':
+        note = body.get('platform_notes', (account.data or {}).get('platform_notes') if account else None)
+        if not isinstance(note, str) or not note.strip() or len(note) > 200:
+            fail('选择“其他”时，请填写其他平台备注（最多 200 字）')
+        details['platform_notes'] = note.strip()
     if "profile_url" in body or "url" in body:
         url = canonical_url(body.get("profile_url", body.get("url")))
         details.update(profile_url=url, url=url)
@@ -58,8 +68,46 @@ def edit_account(account_id: str, body: dict = Body(...), db: Session = Depends(
     for key in ["name", "platform"]:
         if key in body:
             setattr(account, key, required(body, key, 200))
-    update_data(account, account_details(body))
+    update_data(account, account_details(body, account))
     return save(db, account, user, "account.updated")
+
+
+@router.post('/accounts/{account_id}/avatar')
+def upload_avatar(account_id: str, file: UploadFile = File(...), db: Session = Depends(get_db), user: User = Depends(current_user)):
+    account = owned(db, CreatorAccount, account_id, user)
+    raw = file.file.read(2 * 1024 * 1024 + 1)
+    if len(raw) > 2 * 1024 * 1024:
+        fail('头像最多 2 MB')
+    try:
+        with Image.open(io.BytesIO(raw)) as image:
+            if image.format not in {'JPEG', 'PNG', 'WEBP'} or image.width * image.height > 16000000:
+                fail('头像仅支持 JPG、PNG、WebP，最多 1600 万像素')
+            avatar = ImageOps.fit(ImageOps.exif_transpose(image).convert('RGB'), (256, 256))
+            avatar.info.clear()
+    except (UnidentifiedImageError, OSError, ValueError, Image.DecompressionBombError):
+        fail('头像文件损坏或格式无效')
+    version = uuid4().hex
+    AVATAR_DIR.mkdir(parents=True, exist_ok=True)
+    target = AVATAR_DIR / f'{account.id}-{version}.png'
+    avatar.save(target, format='PNG')
+    update_data(account, {'has_avatar': True, 'avatar_version': version})
+    try:
+        return save(db, account, user, 'account.avatar_updated')
+    except Exception:
+        target.unlink(missing_ok=True)
+        raise
+
+
+@router.get('/accounts/{account_id}/avatar')
+def account_avatar(account_id: str, db: Session = Depends(get_db), user: User = Depends(current_user)):
+    account = owned(db, CreatorAccount, account_id, user)
+    version = (account.data or {}).get('avatar_version', '')
+    if not re.fullmatch(r'[a-f0-9]{32}', version):
+        fail('尚未设置头像', 404)
+    target = AVATAR_DIR / f'{account.id}-{version}.png'
+    if not target.is_file():
+        fail('头像文件不存在', 404)
+    return FileResponse(target, media_type='image/png', headers={'Cache-Control': 'private, max-age=3600', 'X-Content-Type-Options': 'nosniff'})
 
 
 def canonical_url(value):

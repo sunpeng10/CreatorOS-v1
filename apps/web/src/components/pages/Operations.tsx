@@ -154,7 +154,7 @@ export function Leads() {
         )[s],
       })),
     },
-    { name: "notes", label: "跟进备注", type: "textarea" },
+    { name: "notes", label: "内部跟进备注（客户不可见）", type: "textarea" },
     { name: "next_action", label: "下一步操作" },
   ];
   return (
@@ -164,6 +164,9 @@ export function Leads() {
         title="从一个真实需求，开始服务。"
         description="官网咨询会进入这里。记录每次沟通，让报价与交付有明确上下文。"
       />
+      <Notice>
+        内部备注仅供老板查看。填写“回复客户”并保存后，已关联账号的客户可在“服务与反馈”查看；提交咨询或选择零元套餐不会自动生成订单。
+      </Notice>
       <RecordsLoading resource={r} />
       <Card title="客户线索" subtitle={`${rows(r.data).length} 条当前可见记录`}>
         {rows(r.data).length ? (
@@ -181,6 +184,19 @@ export function Leads() {
                   </small>
                   {l.notes && <p>跟进：{l.notes}</p>}
                   {l.next_action && <p>下一步：{l.next_action}</p>}
+                  <p className="muted">
+                    {l.customer_organization_id
+                      ? "已关联客户工作区，可站内回复"
+                      : "访客留资：未关联工作区，请通过提供的联系方式人工联系"}
+                  </p>
+                  {l.customer_ticket_id && (
+                    <Link
+                      className="text-link"
+                      href={`/admin/tickets?ticket_id=${l.customer_ticket_id}`}
+                    >
+                      查看客户沟通工单
+                    </Link>
+                  )}
                   <JsonDetails
                     data={l.timeline || l.history || l}
                     title="时间轴与记录"
@@ -200,11 +216,28 @@ export function Leads() {
       </Card>
       {edit && (
         <Modal title={`跟进：${edit.contact}`} close={() => setEdit(null)}>
+          <Notice>
+            {edit.customer_organization_id
+              ? "内部备注不会发送。下方单独填写的客户回复会显示在对方的“服务与反馈”中。"
+              : "此线索未关联登录账号，无法站内回传。保存的备注仅供老板查看，请另行人工联系。"}
+          </Notice>
           <DataForm
-            fields={fields}
+            fields={
+              edit.customer_organization_id
+                ? [
+                    ...fields,
+                    {
+                      name: "customer_reply",
+                      label: "回复客户（保存后发送到对方的服务与反馈）",
+                      type: "textarea",
+                    },
+                  ]
+                : fields
+            }
             endpoint={`/admin/leads/${edit.id}`}
             method="PATCH"
             initial={edit}
+            submit="保存跟进"
             onDone={() => {
               setEdit(null);
               void r.refresh();
@@ -636,6 +669,14 @@ export function Orders({ admin = false }: { admin?: boolean }) {
                       <ArrowRight size={14} />
                     </Link>
                   ))}
+                  {o.ticket_count > 0 && (
+                    <Link
+                      className="text-link"
+                      href={`${admin ? "/admin/tickets" : "/tickets"}?order_id=${o.id}`}
+                    >
+                      相关工单（{o.ticket_count}）<ArrowRight size={14} />
+                    </Link>
+                  )}
                   <JsonDetails data={o} title="订单与交付记录" />
                 </div>
                 <div className="order-actions">

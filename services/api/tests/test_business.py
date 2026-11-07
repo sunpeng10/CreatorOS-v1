@@ -9,6 +9,66 @@ def test_business_module_exists():
     assert importlib.util.find_spec("app.business") is not None, "business router is not implemented"
 
 
+def test_requested_account_avatar_platform_and_privacy(business_client, tmp_path, monkeypatch):
+    from PIL import Image
+    from app import business_research
+    monkeypatch.setattr(business_research, 'AVATAR_DIR', tmp_path)
+    http, _, active, admin, client = business_client
+    assert http.post('/api/accounts', json={'name': 'TEST', 'platform': '其他'}).status_code == 422
+    account = http.post('/api/accounts', json={'name': 'TEST', 'platform': '其他', 'platform_notes': '个人知识站'}).json()
+    assert account['platform_notes'] == '个人知识站'
+    buffer = io.BytesIO()
+    Image.new('RGB', (8, 8), 'green').save(buffer, 'PNG')
+    result = http.post(f'/api/accounts/{account["id"]}/avatar', files={'file': ('头像.png', buffer.getvalue(), 'image/png')})
+    assert result.status_code == 200, result.text
+    assert result.json()['has_avatar'] is True
+    assert http.get(f'/api/accounts/{account["id"]}/avatar').status_code == 200
+    assert http.post(f'/api/accounts/{account["id"]}/avatar', files={'file': ('fake.png', b'not an image', 'image/png')}).status_code == 422
+    active['user'] = client
+    assert http.get(f'/api/accounts/{account["id"]}/avatar').status_code == 404
+
+
+def test_requested_lead_reply_and_order_tickets_reach_only_linked_customer(business_client):
+    from app.models import Lead, Quote, Order, Ticket, User, Organization
+    http, factory, active, admin, client = business_client
+    with factory() as db:
+        lead = Lead(organization_id=admin.organization_id, contact='TEST', need='TEST 客户咨询', data={'customer_user_id': client.id, 'customer_organization_id': client.organization_id})
+        quote = Quote(organization_id=admin.organization_id, status='APPROVED', amount=0)
+        db.add_all([lead, quote]); db.flush()
+        order = Order(organization_id=admin.organization_id, quote_id=quote.id, amount=0, data={'customer_user_id': client.id, 'customer_organization_id': client.organization_id})
+        db.add(order); db.commit()
+    response = http.patch(f'/api/admin/leads/{lead.id}', json={'notes': 'INTERNAL_SECRET', 'customer_reply': '请补充目标受众'})
+    assert response.status_code == 200, response.text
+    active['user'] = client
+    customer_tickets = http.get('/api/tickets').json()['items']
+    assert len(customer_tickets) == 1
+    assert customer_tickets[0]['reply'] == '请补充目标受众'
+    assert 'INTERNAL_SECRET' not in str(customer_tickets)
+    ticket_id = customer_tickets[0]['id']
+    http.patch(f'/api/tickets/{ticket_id}', json={'reply': '初学者为主'})
+    active['user'] = admin
+    assert http.get('/api/admin/tickets').json()['items'][0]['timeline'][-1]['note'] == '初学者为主'
+    admin_ticket = http.post('/api/tickets', json={'order_id': order.id, 'subject': 'TEST 交付沟通', 'description': '已收到需求'}).json()
+    active['user'] = client
+    assert any(t['id'] == admin_ticket['id'] for t in http.get('/api/tickets').json()['items'])
+    assert http.get('/api/orders').json()['items'][0]['ticket_count'] == 1
+    assert http.get(f'/api/admin/leads/{lead.id}').status_code == 403
+    with factory() as db:
+        legacy = Ticket(organization_id=admin.organization_id, order_id=order.id, subject='TEST 旧订单工单', data={'customer_user_id': admin.id, 'customer_organization_id': admin.organization_id})
+        stranger_org = Organization(name='TEST 无关工作区')
+        db.add_all([legacy, stranger_org]); db.flush()
+        stranger = User(organization_id=stranger_org.id, email='stranger@example.test', password_hash='unused')
+        db.add(stranger); db.commit()
+    assert any(t['id'] == legacy.id for t in http.get('/api/tickets').json()['items'])
+    assert http.patch(f'/api/tickets/{legacy.id}', json={'reply': '客户补充'}).status_code == 200
+    active['user'] = stranger
+    assert http.get('/api/tickets').json()['items'] == []
+    assert http.patch(f'/api/tickets/{ticket_id}', json={'reply': '越权'}).status_code == 404
+    active['user'] = admin
+    guest = http.post('/api/leads', json={'contact': 'guest@example.test', 'need': '访客需求'}).json()
+    assert http.patch(f'/api/admin/leads/{guest["id"]}', json={'customer_reply': '不可误发给邮箱同名用户'}).status_code == 422
+
+
 def test_missing_metrics_stay_null_and_invalid_counts_rejected():
     from app.business_research import validate_metric_rows
     rows, errors = validate_metric_rows([{"title": "测试作品", "views": "100", "likes": "", "comments": "0"}], {})

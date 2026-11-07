@@ -1,6 +1,7 @@
 "use client";
 import { useState } from "react";
 import Link from "next/link";
+import { useSearchParams } from "next/navigation";
 import {
   Bot,
   Database,
@@ -28,6 +29,9 @@ import {
   type FormField,
 } from "../ui";
 export function Tickets({ admin = false }: { admin?: boolean }) {
+  const params = useSearchParams();
+  const orderId = params.get("order_id");
+  const ticketId = params.get("ticket_id");
   const r = useResource(admin ? "/admin/tickets" : "/tickets"),
     orders = useResource(admin ? "/admin/orders" : "/orders");
   const [edit, setEdit] = useState<Row | null | "new">(null);
@@ -90,7 +94,7 @@ export function Tickets({ admin = false }: { admin?: boolean }) {
         title={
           admin ? "让每个问题，都有后续。" : "有问题，留下一条可追踪的记录。"
         }
-        description="咨询、修改、投诉与退款申请保留处理记录。真实退款需要人工审批与支付服务配置。"
+        description="客户咨询、老板回复与处理记录在此同步。工单关联订单后，可从“我的订单”跳转查看；工单本身不生成订单。"
         action={
           <Button onClick={() => setEdit("new")}>
             <Plus size={16} />
@@ -98,36 +102,71 @@ export function Tickets({ admin = false }: { admin?: boolean }) {
           </Button>
         }
       />
+      {(orderId || ticketId) && (
+        <Notice>
+          正在查看关联工单。
+          <Link href={admin ? "/admin/tickets" : "/tickets"}>查看全部工单</Link>
+        </Notice>
+      )}
       {r.loading ? (
         <Loading />
       ) : r.error ? (
         <Notice tone="error">{r.error}</Notice>
       ) : null}
       <Card title="工单记录">
-        {rows(r.data).length ? (
+        {rows(r.data).filter(
+          (t) =>
+            (!orderId || t.order_id === orderId) &&
+            (!ticketId || t.id === ticketId),
+        ).length ? (
           <div className="record-list">
-            {rows(r.data).map((t) => (
-              <div className="record" key={t.id}>
-                <div className="grow">
-                  <div className="row-actions">
-                    <h3>{t.subject}</h3>
-                    <Status value={t.status} />
+            {rows(r.data)
+              .filter(
+                (t) =>
+                  (!orderId || t.order_id === orderId) &&
+                  (!ticketId || t.id === ticketId),
+              )
+              .map((t) => (
+                <div className="record" key={t.id}>
+                  <div className="grow">
+                    <div className="row-actions">
+                      <h3>{t.subject}</h3>
+                      <Status value={t.status} />
+                    </div>
+                    <p className="pre-wrap">{t.message || t.description}</p>
+                    <small className="muted">
+                      {dateLabel(t.created_at)} · {t.kind || "咨询"}
+                    </small>
+                    {t.reply &&
+                      !(t.timeline || []).some((entry: Row) => entry.note) && (
+                        <p>处理回复：{t.reply}</p>
+                      )}
+                    {(t.timeline || [])
+                      .filter((entry: Row) => entry.note)
+                      .map((entry: Row, index: number) => (
+                        <p className="pre-wrap" key={index}>
+                          <strong>
+                            {entry.role
+                              ? entry.role === "OWNER_ADMIN"
+                                ? "客服"
+                                : "客户"
+                              : "记录"}
+                          </strong>{" "}
+                          · {dateLabel(entry.at)}
+                          <br />
+                          {entry.note}
+                        </p>
+                      ))}
+                    <JsonDetails
+                      data={t.history || t.logs || t}
+                      title="处理日志"
+                    />
                   </div>
-                  <p className="pre-wrap">{t.message || t.description}</p>
-                  <small className="muted">
-                    {dateLabel(t.created_at)} · {t.kind || "咨询"}
-                  </small>
-                  {t.reply && <p>处理回复：{t.reply}</p>}
-                  <JsonDetails
-                    data={t.history || t.logs || t}
-                    title="处理日志"
-                  />
+                  <Button variant="secondary" onClick={() => setEdit(t)}>
+                    {admin ? "处理工单" : "补充记录"}
+                  </Button>
                 </div>
-                <Button variant="secondary" onClick={() => setEdit(t)}>
-                  {admin ? "处理工单" : "补充记录"}
-                </Button>
-              </div>
-            ))}
+              ))}
           </div>
         ) : (
           <Empty title="目前没有工单">
@@ -140,11 +179,27 @@ export function Tickets({ admin = false }: { admin?: boolean }) {
           title={edit === "new" ? "创建工单" : "更新工单"}
           close={() => setEdit(null)}
         >
+          {edit === "new" && admin && (
+            <Notice>
+              在此创建工单时，选择客户的关联订单即可同步给该客户；不关联订单则作为后台工单保存。
+            </Notice>
+          )}
           <DataForm
             fields={fields}
             endpoint={edit === "new" ? "/tickets" : `/tickets/${edit.id}`}
             method={edit === "new" ? "POST" : "PATCH"}
-            initial={edit === "new" ? {} : edit}
+            initial={
+              edit === "new"
+                ? { order_id: orderId || "" }
+                : {
+                    ...edit,
+                    reply: "",
+                    status:
+                      admin || ["OPEN", "CLOSED"].includes(edit.status)
+                        ? edit.status
+                        : "OPEN",
+                  }
+            }
             onDone={() => {
               setEdit(null);
               void r.refresh();

@@ -1,5 +1,5 @@
 "use client";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import {
   BarChart3,
@@ -40,7 +40,28 @@ import {
 } from "../ui";
 const accountFields: FormField[] = [
   { name: "name", label: "账号名称", required: true },
-  { name: "platform", label: "所属平台", required: true },
+  {
+    name: "platform",
+    label: "所属平台",
+    required: true,
+    options: [
+      "",
+      "抖音",
+      "小红书",
+      "B站",
+      "视频号",
+      "快手",
+      "微信公众号",
+      "微博",
+      "YouTube",
+      "其他",
+    ].map((value) => ({ value, label: value || "请选择平台" })),
+  },
+  {
+    name: "platform_notes",
+    label: "其他平台备注",
+    placeholder: "选择“其他”时填写实际平台名称",
+  },
   {
     name: "category",
     label: "领域 / 内容赛道",
@@ -51,6 +72,86 @@ const accountFields: FormField[] = [
   { name: "style", label: "内容风格", type: "textarea" },
   { name: "url", label: "账号主页", type: "url" },
 ];
+
+function AccountForm({
+  account,
+  onDone,
+}: {
+  account: Row | null;
+  onDone: () => void;
+}) {
+  const [savedId, setSavedId] = useState(account?.id || "");
+  const [avatar, setAvatar] = useState<File | null>(null);
+  const [preview, setPreview] = useState("");
+  const [avatarError, setAvatarError] = useState("");
+  useEffect(
+    () => () => {
+      if (preview) URL.revokeObjectURL(preview);
+    },
+    [preview],
+  );
+  const known = accountFields
+    .find((field) => field.name === "platform")!
+    .options!.some((option) => option.value === account?.platform);
+  const initial =
+    account && !known
+      ? { ...account, platform: "其他", platform_notes: account.platform }
+      : account || {};
+  return (
+    <DataForm
+      fields={accountFields}
+      initial={initial}
+      endpoint={savedId ? `/accounts/${savedId}` : "/accounts"}
+      method={savedId ? "PATCH" : "POST"}
+      onSaved={async (record) => {
+        setSavedId(record.id);
+        if (avatarError) throw new Error(avatarError);
+        if (avatar) {
+          const form = new FormData();
+          form.append("file", avatar);
+          await post(`/accounts/${record.id}/avatar`, form);
+        }
+      }}
+      onDone={onDone}
+    >
+      <Field
+        label="账号头像"
+        hint="JPG / PNG / WebP，最多 2 MB；保存后显示在档案卡片。"
+      >
+        {(preview || account?.has_avatar) && (
+          <img
+            width={64}
+            height={64}
+            style={{ borderRadius: "50%", objectFit: "cover" }}
+            src={
+              preview ||
+              `/api/accounts/${account!.id}/avatar?v=${account!.avatar_version}`
+            }
+            alt="账号头像预览"
+          />
+        )}
+        <input
+          type="file"
+          accept=".jpg,.jpeg,.png,.webp"
+          onChange={(event) => {
+            const file = event.target.files?.[0] || null;
+            if (file && file.size > 2 * 1024 * 1024) {
+              setAvatar(null);
+              setPreview("");
+              setAvatarError("头像最多 2 MB，请换一张图片。");
+              return;
+            }
+            setAvatarError("");
+            setAvatar(file);
+            setPreview(file ? URL.createObjectURL(file) : "");
+          }}
+        />
+      </Field>
+      {avatarError && <Notice tone="error">{avatarError}</Notice>}
+    </DataForm>
+  );
+}
+
 export function Accounts() {
   const r = useResource("/accounts");
   const [edit, setEdit] = useState<Row | null | "new">(null);
@@ -76,8 +177,27 @@ export function Accounts() {
           {rows(r.data).map((a) => (
             <Card key={a.id}>
               <div className="account-header">
-                <span className="account-avatar">{a.name.slice(0, 1)}</span>
-                <Badge>{a.platform}</Badge>
+                <span className="account-avatar">
+                  {a.has_avatar ? (
+                    <img
+                      src={`/api/accounts/${a.id}/avatar?v=${a.avatar_version}`}
+                      alt={`${a.name}的头像`}
+                      style={{
+                        width: "100%",
+                        height: "100%",
+                        objectFit: "cover",
+                        borderRadius: "inherit",
+                      }}
+                    />
+                  ) : (
+                    a.name.slice(0, 1)
+                  )}
+                </span>
+                <Badge>
+                  {a.platform === "其他" && a.platform_notes
+                    ? `其他·${a.platform_notes}`
+                    : a.platform}
+                </Badge>
               </div>
               <h2>{a.name}</h2>
               <p className="muted mt-2">{a.category || "尚未设置内容领域"}</p>
@@ -118,11 +238,8 @@ export function Accounts() {
           title={edit === "new" ? "添加创作者账号" : "编辑账号档案"}
           close={() => setEdit(null)}
         >
-          <DataForm
-            fields={accountFields}
-            endpoint={edit === "new" ? "/accounts" : `/accounts/${edit.id}`}
-            method={edit === "new" ? "POST" : "PATCH"}
-            initial={edit === "new" ? {} : edit}
+          <AccountForm
+            account={edit === "new" ? null : edit}
             onDone={() => {
               setEdit(null);
               void r.refresh();

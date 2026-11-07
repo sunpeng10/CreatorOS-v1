@@ -66,6 +66,7 @@ def _task(db, run):
 
 def _detail(db, analysis):
     result = serialize(analysis)
+    result['content_title'] = db.scalar(select(ContentItem.title).where(ContentItem.id == analysis.content_id, ContentItem.organization_id == analysis.organization_id))
     result["steps"] = []
     if analysis.task_id:
         run = db.get(AgentRun, analysis.task_id)
@@ -140,8 +141,10 @@ def analyses(limit: int = Query(30, ge=1, le=100), offset: int = Query(0, ge=0),
              db: Session = Depends(get_db), user: User = Depends(current_user)):
     query = select(ContentAnalysis).where(ContentAnalysis.organization_id == user.organization_id)
     total = db.scalar(select(func.count()).select_from(query.subquery()))
-    items = db.scalars(query.order_by(ContentAnalysis.created_at.desc()).offset(offset).limit(limit)).all()
-    return {"items": [serialize(item) for item in items], "total": total}
+    items = db.execute(query.add_columns(ContentItem.title).join(ContentItem, ContentItem.id == ContentAnalysis.content_id)
+                       .where(ContentItem.organization_id == user.organization_id)
+                       .order_by(ContentAnalysis.created_at.desc()).offset(offset).limit(limit)).all()
+    return {"items": [{**serialize(item), 'content_title': title} for item, title in items], "total": total}
 
 
 @router.get("/analyses/{analysis_id}")

@@ -1,3 +1,12 @@
+export function analysisLabel(analysis: {
+  id: string;
+  content_title?: string;
+  title?: string;
+}): string {
+  const title = (analysis.content_title || analysis.title || "").trim();
+  return title ? `分析·${title}` : `分析 ${analysis.id.slice(0, 8)}`;
+}
+
 export function formatMetric(value: unknown): string {
   if (value === null || value === undefined || value === "") return "暂无数据";
   const n = Number(value);
