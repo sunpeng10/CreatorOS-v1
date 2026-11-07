@@ -12,7 +12,7 @@ import {
   Wallet,
 } from "lucide-react";
 import { post, rows, useResource, type Row } from "@/lib/api";
-import { dateLabel, formatMetric, money } from "@/lib/format";
+import { dateLabel, formatMetric, label, money } from "@/lib/format";
 import {
   Badge,
   Button,
@@ -461,10 +461,17 @@ export function Approvals() {
               <div className="record" key={a.id}>
                 <div className="grow">
                   <div className="row-actions">
-                    <h3>{a.kind}</h3>
+                    <h3>
+                      {a.content_title
+                        ? `审批·${a.content_title}`
+                        : label(a.kind)}
+                    </h3>
                     <Status value={a.status} />
                   </div>
-                  <p>目标记录：{a.target_id || "工作区数据"}</p>
+                  <p>
+                    目标记录：{a.target_name || a.target_id || "工作区数据"}
+                  </p>
+                  {a.content_title && <p>审批类型：{label(a.kind)}</p>}
                   <p>
                     {a.reason ||
                       a.description ||

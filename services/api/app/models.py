@@ -1,9 +1,10 @@
 from datetime import datetime, timezone
+from pathlib import PurePath
 from uuid import uuid4
 
-from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, JSON, String, Text, UniqueConstraint, inspect
+from sqlalchemy import Boolean, DateTime, DDL, Float, ForeignKey, Integer, JSON, String, Text, UniqueConstraint, event, inspect
 from sqlalchemy.ext.mutable import MutableDict
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.orm import Mapped, mapped_column, object_session
 
 from .db import Base
 
@@ -62,6 +63,21 @@ class ContentItem(Scoped, Base):
     kind: Mapped[str] = mapped_column(String(30), default='text')
     account_id: Mapped[str | None] = mapped_column(ForeignKey('creator_accounts.id'), nullable=True)
     text: Mapped[str] = mapped_column(Text, default='')
+
+
+# Reject new conflicts without rewriting or deleting already saved legacy works.
+CONTENT_TITLE_GUARDS = {
+    'content_title_insert_guard': '''CREATE TRIGGER IF NOT EXISTS content_title_insert_guard
+        BEFORE INSERT ON content_items
+        WHEN EXISTS (SELECT 1 FROM content_items WHERE organization_id = NEW.organization_id AND trim(title) = trim(NEW.title))
+        BEGIN SELECT RAISE(ABORT, 'CONTENT_TITLE_EXISTS'); END''',
+    'content_title_update_guard': '''CREATE TRIGGER IF NOT EXISTS content_title_update_guard
+        BEFORE UPDATE OF title, organization_id ON content_items
+        WHEN EXISTS (SELECT 1 FROM content_items WHERE organization_id = NEW.organization_id AND trim(title) = trim(NEW.title) AND id != NEW.id)
+        BEGIN SELECT RAISE(ABORT, 'CONTENT_TITLE_EXISTS'); END''',
+}
+for statement in CONTENT_TITLE_GUARDS.values():
+    event.listen(ContentItem.__table__, 'after_create', DDL(statement).execute_if(dialect='sqlite'))
 
 
 class ContentAsset(Scoped, Base):
@@ -237,4 +253,11 @@ def serialize(obj):
         value = getattr(obj, column.key)
         result[column.key] = value.isoformat() if isinstance(value, datetime) else value
     result['data'] = dict(obj.data or {})
+    if isinstance(obj, ContentAsset):
+        db = object_session(obj)
+        content = db.get(ContentItem, obj.content_id) if db else None
+        title = content.title if content and content.organization_id == obj.organization_id else '作品'
+        suffix = PurePath(obj.original_name).suffix.lower()
+        detail = f'关键帧 {result.get("timecode", 0)}s' if result.get('role') == 'keyframe' else f'素材 {result.get("position", 0) + 1}'
+        result['original_name'] = f'{title} · {detail}{suffix}'
     return result

@@ -9,6 +9,43 @@ def test_business_module_exists():
     assert importlib.util.find_spec("app.business") is not None, "business router is not implemented"
 
 
+def test_work_title_labels_existing_assets_and_delegated_approvals(business_client):
+    from app.models import ContentItem, ContentAnalysis, ContentAsset, AgentRun, Approval, serialize
+    http, factory, _, admin, client = business_client
+    with factory() as db:
+        content = ContentItem(organization_id=client.organization_id, title='雅思口语', text='TEST')
+        db.add(content); db.flush()
+        asset = ContentAsset(organization_id=client.organization_id, content_id=content.id, original_name='4537dd54.jpg', path='unused', mime='image/jpeg', size=10, data={'position': 0})
+        analysis = ContentAnalysis(organization_id=client.organization_id, content_id=content.id)
+        db.add_all([asset, analysis]); db.flush()
+        run = AgentRun(organization_id=client.organization_id, analysis_id=analysis.id)
+        db.add(run); db.flush()
+        valid = Approval(organization_id=admin.organization_id, kind='COMPLIANCE_REVIEW', target_id=run.id, data={'analysis_id': analysis.id, 'requester_org': client.organization_id})
+        invalid = Approval(organization_id=admin.organization_id, kind='COMPLIANCE_REVIEW', target_id=run.id)
+        db.add_all([valid, invalid]); db.commit()
+        assert serialize(asset)['original_name'] == '雅思口语 · 素材 1.jpg'
+        content.title = '雅思口语第二课'; db.commit()
+        assert serialize(asset)['original_name'] == '雅思口语第二课 · 素材 1.jpg'
+        valid_id, invalid_id = valid.id, invalid.id
+    approvals = {a['id']: a for a in http.get('/api/approvals').json()['items']}
+    assert approvals[valid_id]['content_title'] == '雅思口语第二课'
+    assert approvals[valid_id]['target_name'] == '雅思口语第二课'
+    assert not approvals[invalid_id].get('content_title')
+
+
+def test_work_title_uniqueness_is_enforced_by_database(business_client):
+    from sqlalchemy.exc import IntegrityError
+    from app.models import ContentItem
+    _, factory, _, admin, _ = business_client
+    with factory() as db:
+        db.add(ContentItem(organization_id=admin.organization_id, title='雅思口语'))
+        db.commit()
+        db.add(ContentItem(organization_id=admin.organization_id, title=' 雅思口语 '))
+        with pytest.raises(IntegrityError):
+            db.commit()
+        db.rollback()
+
+
 def test_requested_account_avatar_platform_and_privacy(business_client, tmp_path, monkeypatch):
     from PIL import Image
     from app import business_research

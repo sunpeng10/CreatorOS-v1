@@ -342,7 +342,34 @@ def admin_tickets(db: Session = Depends(get_db), user: User = Depends(require_ad
 
 @router.get("/approvals")
 def approvals(db: Session = Depends(get_db), user: User = Depends(require_admin)):
-    return listing(rows(db, Approval, user))
+    return listing([approval_view(db, item) for item in rows(db, Approval, user)])
+
+
+def approval_view(db, approval):
+    result = serialize(approval)
+    analysis = None
+    organization_id = approval.organization_id
+    if approval.kind == 'COMPLIANCE_REVIEW':
+        run = db.get(AgentRun, approval.target_id)
+        if run and (run.organization_id == organization_id or (
+            approval.data.get('requester_org') == run.organization_id
+            and approval.data.get('analysis_id') == run.analysis_id
+        )):
+            organization_id = run.organization_id
+            analysis = db.get(ContentAnalysis, run.analysis_id)
+    elif approval.kind == 'PUBLISH_CONTENT':
+        analysis = db.get(ContentAnalysis, approval.target_id)
+    if analysis and analysis.organization_id == organization_id:
+        content = db.get(ContentItem, analysis.content_id)
+        if content and content.organization_id == organization_id:
+            result.update(content_title=content.title, target_name=content.title)
+    if approval.kind == 'QUOTE':
+        quote = db.get(Quote, approval.target_id)
+        if quote and quote.organization_id == organization_id:
+            service = db.get(ServicePlan, quote.service_id) if quote.service_id else None
+            name = service.name if service and service.organization_id == organization_id else '服务报价'
+            result['target_name'] = f'{name} · ¥{quote.amount:.2f}'
+    return result
 
 
 @router.post("/approvals/requests")

@@ -36,16 +36,69 @@ import {
   PageHeading,
   Status,
 } from "../ui";
+
+function UploadPreview({ file, name }: { file: File; name: string }) {
+  const image = /\.(jpe?g|png|webp)$/i.test(file.name);
+  const video = /\.(mp4|mov)$/i.test(file.name);
+  const [url, setUrl] = useState("");
+  const [text, setText] = useState("");
+  useEffect(() => {
+    let active = true;
+    const preview = image || video ? URL.createObjectURL(file) : "";
+    setUrl(preview);
+    if (!preview) {
+      file
+        .slice(0, 4000)
+        .text()
+        .then(
+          (value) => {
+            if (active) setText(value);
+          },
+          () => {
+            if (active) setText("暂时无法预览，提交后解析。");
+          },
+        );
+    }
+    return () => {
+      active = false;
+      if (preview) URL.revokeObjectURL(preview);
+    };
+  }, [file, image, video]);
+  return (
+    <span className="upload-preview">
+      {image ? (
+        <img src={url || undefined} alt={name} />
+      ) : video ? (
+        <video
+          src={url || undefined}
+          preload="metadata"
+          muted
+          playsInline
+          aria-label={name}
+        />
+      ) : (
+        <span className="upload-preview-text">{text || "正在读取预览…"}</span>
+      )}
+      <b>{name}</b>
+    </span>
+  );
+}
+
 export function Analyze() {
   const router = useRouter();
   const history = useResource("/analyses"),
     accounts = useResource("/accounts"),
     ai = useResource("/system/ai-status");
   const [files, setFiles] = useState<File[]>([]),
+    [title, setTitle] = useState(""),
     [busy, setBusy] = useState(false),
     [error, setError] = useState(""),
     [mode, setMode] = useState("local"),
     [consent, setConsent] = useState(false);
+  const fileNames = files.map(
+    (file, index) =>
+      `${title.trim() || "待命名作品"} · 素材 ${index + 1}${file.name.match(/\.[^.]+$/)?.[0].toLowerCase() || ""}`,
+  );
   return (
     <>
       <PageHeading
@@ -61,6 +114,11 @@ export function Analyze() {
             onSubmit={async (e) => {
               e.preventDefault();
               const form = new FormData(e.currentTarget);
+              if (!title.trim()) {
+                setError("请填写作品标题。");
+                return;
+              }
+              form.set("title", title.trim());
               const validation = validateFiles(files);
               if (validation) {
                 setError(validation);
@@ -129,10 +187,26 @@ export function Analyze() {
                   ])
                 }
               />
-              <span className="upload-icon">
-                <Upload size={26} />
-              </span>
-              <strong>拖放素材到这里，或点击选择</strong>
+              {files.length ? (
+                <span className="upload-previews">
+                  {files.map((file, index) => (
+                    <UploadPreview
+                      key={`${file.name}-${index}`}
+                      file={file}
+                      name={fileNames[index]}
+                    />
+                  ))}
+                </span>
+              ) : (
+                <span className="upload-icon">
+                  <Upload size={26} />
+                </span>
+              )}
+              <strong>
+                {files.length
+                  ? `已选择 ${files.length} 份素材，点击继续添加`
+                  : "拖放素材到这里，或点击选择"}
+              </strong>
               <p>视频、图片、文稿与字幕，可一起上传</p>
               <small>
                 MP4 / MOV · JPG / PNG / WebP · TXT / MD / SRT / VTT
@@ -146,13 +220,13 @@ export function Analyze() {
                   <div key={`${f.name}-${i}`}>
                     <FileText size={16} />
                     <span>
-                      {f.name}
+                      {fileNames[i]}
                       <small>{(f.size / 1024 / 1024).toFixed(2)} MB</small>
                     </span>
                     <button
                       type="button"
                       className="icon-button"
-                      aria-label={`移除 ${f.name}`}
+                      aria-label={`移除 ${fileNames[i]}`}
                       onClick={() => setFiles(files.filter((_, n) => n !== i))}
                     >
                       <X size={16} />
@@ -162,9 +236,14 @@ export function Analyze() {
               </div>
             )}
             <div className="form-grid">
-              <Field label="作品标题">
+              <Field
+                label="作品标题"
+                hint="同一工作区内不能重名，素材与审批将使用此标题。"
+              >
                 <input
                   name="title"
+                  value={title}
+                  onChange={(event) => setTitle(event.target.value)}
                   required
                   maxLength={300}
                   placeholder="为这份研究起一个容易识别的名字"
@@ -409,29 +488,31 @@ export function AnalysisReport({ id }: { id: string }) {
         eyebrow="CONTENT RESEARCH / REPORT"
         title={content.data?.title || data.title || "内容研究报告"}
         description={`${dateLabel(data.created_at)} · ${label(data.mode)} · 报告 ID ${id.slice(0, 8)}`}
-        action={data.status === "SUCCEEDED" ? (
-          <div className="row-actions no-print">
-            <a
-              className="btn btn-secondary"
-              href={`/api/analyses/${id}/export?format=markdown`}
-              download
-            >
-              <Download size={16} />
-              Markdown
-            </a>
-            <a
-              className="btn btn-secondary"
-              href={`/api/analyses/${id}/export?format=json`}
-              download
-            >
-              JSON
-            </a>
-            <Button variant="secondary" onClick={() => window.print()}>
-              <Printer size={16} />
-              打印
-            </Button>
-          </div>
-        ) : undefined}
+        action={
+          data.status === "SUCCEEDED" ? (
+            <div className="row-actions no-print">
+              <a
+                className="btn btn-secondary"
+                href={`/api/analyses/${id}/export?format=markdown`}
+                download
+              >
+                <Download size={16} />
+                Markdown
+              </a>
+              <a
+                className="btn btn-secondary"
+                href={`/api/analyses/${id}/export?format=json`}
+                download
+              >
+                JSON
+              </a>
+              <Button variant="secondary" onClick={() => window.print()}>
+                <Printer size={16} />
+                打印
+              </Button>
+            </div>
+          ) : undefined
+        }
       />
       <div className="report-status">
         <Status value={data.status} />
@@ -697,9 +778,7 @@ export function AnalysisReport({ id }: { id: string }) {
           查看上方错误信息，修正素材或配置后重试。
         </Empty>
       ) : data.status === "CANCELED" ? (
-        <Empty title="分析已取消">
-          如需继续研究，请从内容分析页新建任务。
-        </Empty>
+        <Empty title="分析已取消">如需继续研究，请从内容分析页新建任务。</Empty>
       ) : (
         <Empty title="报告将在任务完成后显示">
           本地解析与研究步骤正在保存到工作区。

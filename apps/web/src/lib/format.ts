@@ -59,6 +59,11 @@ export function money(value: unknown): string {
 }
 export function label(value: unknown): string {
   const labels: Record<string, string> = {
+    COMPLIANCE_REVIEW: "内容复核",
+    PUBLISH_CONTENT: "内容发布审批",
+    QUOTE: "报价审批",
+    REAL_PAYMENT: "付款审批",
+    DELETE_USER_DATA: "工作区数据删除审批",
     QUEUED: "排队中",
     RUNNING: "进行中",
     WAITING_APPROVAL: "待审批",

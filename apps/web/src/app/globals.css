@@ -1867,6 +1867,40 @@ tr:last-child td {
   display: grid;
   gap: 8px;
 }
+.upload-previews {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 12px;
+  width: 100%;
+  margin-bottom: 16px;
+}
+.upload-preview {
+  display: block;
+  min-width: 0;
+}
+.upload-preview img,
+.upload-preview video,
+.upload-preview-text {
+  display: block;
+  width: 100%;
+  height: 140px;
+  object-fit: contain;
+  border-radius: 6px;
+  background: #fff;
+}
+.upload-preview-text {
+  padding: 12px;
+  text-align: left;
+  white-space: pre-wrap;
+  overflow: hidden;
+  font-size: 11px;
+}
+.upload-preview b {
+  display: block;
+  margin-top: 6px;
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
 .file-list > div {
   display: flex;
   align-items: center;

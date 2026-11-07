@@ -56,3 +56,29 @@ def test_requested_analysis_title_is_available_for_existing_lists(client):
     assert analysis['content_title'] == '雅思口语'
     assert client.get('/api/analyses').json()['items'][0]['content_title'] == '雅思口语'
     assert client.get('/api/dashboard').json()['analyses'][0]['content_title'] == '雅思口语'
+
+
+def test_work_title_identifies_assets_downloads_and_rejects_duplicates(client):
+    from urllib.parse import unquote
+    client.post('/api/auth/register', json={'email': 'work-name@example.test', 'password': 'Test-Password-482!', 'name': 'TEST'})
+    response = client.post('/api/assets/upload', data={'title': ' 雅思口语 '}, files=[
+        ('files', ('4537dd54.md', b'TEST first', 'text/markdown')),
+        ('files', ('1090632.txt', b'TEST second', 'text/plain')),
+    ])
+    assert response.status_code == 200, response.text
+    item = response.json()
+    assert item['title'] == '雅思口语'
+    assert [a['original_name'] for a in item['assets']] == ['雅思口语 · 素材 1.md', '雅思口语 · 素材 2.txt']
+    download = client.get('/api/assets/' + item['assets'][0]['id'] + '?download=true')
+    assert '雅思口语 · 素材 1.md' in unquote(download.headers['content-disposition'])
+    for response in [
+        client.post('/api/contents', json={'title': ' 雅思口语 ', 'text': 'TEST'}),
+        client.post('/api/assets/upload', data={'title': '雅思口语'}, files={'files': ('repeat.md', b'TEST', 'text/markdown')}),
+    ]:
+        assert response.status_code == 409, response.text
+        assert '作品标题已存在' in response.text
+    assert client.get('/api/contents').json()['total'] == 1
+    assert client.post('/api/contents', json={'title': '雅思听力', 'text': 'TEST'}).status_code == 200
+    client.post('/api/auth/logout')
+    client.post('/api/auth/register', json={'email': 'other-work-name@example.test', 'password': 'Test-Password-482!', 'name': 'TEST'})
+    assert client.post('/api/contents', json={'title': '雅思口语', 'text': 'TEST'}).status_code == 200

@@ -1,5 +1,6 @@
 import mimetypes
 import os
+import re
 from pathlib import Path
 from uuid import uuid4
 
@@ -7,6 +8,7 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Upload
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import select, func, or_
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from .auth import current_user, owned
@@ -34,6 +36,26 @@ class DeletionRequest(BaseModel):
     reason: str = Field(default='', max_length=3000)
 
 
+def checked_title(db, title, organization_id):
+    title = title.strip()
+    if not title or len(title) > 300:
+        raise HTTPException(422, '请填写 1–300 字的作品标题')
+    if db.scalar(select(ContentItem.id).where(ContentItem.organization_id == organization_id, func.trim(ContentItem.title) == title).limit(1)):
+        raise HTTPException(409, '作品标题已存在，请更换标题后保存。')
+    return title
+
+
+def add_content(db, item):
+    db.add(item)
+    try:
+        db.flush()
+    except IntegrityError as error:
+        db.rollback()
+        if 'CONTENT_TITLE_EXISTS' in str(error.orig):
+            raise HTTPException(409, '作品标题已存在，请更换标题后保存。') from error
+        raise
+
+
 @router.get('/contents')
 def contents(page: int = Query(1, ge=1), page_size: int = Query(50, ge=1, le=100), user: User = Depends(current_user), db: Session = Depends(get_db)):
     query = select(ContentItem).where(ContentItem.organization_id == user.organization_id)
@@ -45,9 +67,8 @@ def contents(page: int = Query(1, ge=1), page_size: int = Query(50, ge=1, le=100
 def create_content(body: ContentBody, user: User = Depends(current_user), db: Session = Depends(get_db)):
     if body.account_id:
         owned(db, CreatorAccount, body.account_id, user)
-    item = ContentItem(organization_id=user.organization_id, title=body.title, text=body.text, kind=body.kind, account_id=body.account_id, data=body.model_dump(exclude={'title', 'text', 'kind', 'account_id'}))
-    db.add(item)
-    db.flush()
+    item = ContentItem(organization_id=user.organization_id, title=checked_title(db, body.title, user.organization_id), text=body.text, kind=body.kind, account_id=body.account_id, data=body.model_dump(exclude={'title', 'text', 'kind', 'account_id'}))
+    add_content(db, item)
     db.add(AuditLog(organization_id=user.organization_id, actor_id=user.id, action='CONTENT_CREATED', target_id=item.id))
     db.commit()
     return serialize(item)
@@ -68,6 +89,7 @@ def upload(files: list[UploadFile] = File(...), title: str = Form(...), text: st
         raise HTTPException(422, '请填写标题，文本不超过 20 万字符，一次上传 1–12 个文件')
     if account_id:
         owned(db, CreatorAccount, account_id, user)
+    title = checked_title(db, title, user.organization_id)
     try:
         stats = json.loads(statistics)
         if not isinstance(stats, dict):
@@ -80,8 +102,7 @@ def upload(files: list[UploadFile] = File(...), title: str = Form(...), text: st
     created_paths = []
     total = 0
     item = ContentItem(organization_id=user.organization_id, title=title.strip(), text=text, kind='text', account_id=account_id or None, data={'platform': platform, 'category': category, 'author': author, 'published_at': published_at, 'statistics': stats, 'analysis_status': '本地基础分析'})
-    db.add(item)
-    db.flush()
+    add_content(db, item)
     metadata_list = []
     try:
         for position, file in enumerate(files):
@@ -141,7 +162,8 @@ def asset(identifier: str, download: bool = False, user: User = Depends(current_
     path = Path(record.path).resolve()
     if not path.is_relative_to(UPLOAD_DIR.resolve()) or not path.is_file():
         raise HTTPException(404, '素材文件不存在')
-    response = FileResponse(path, media_type=record.mime, filename=record.original_name, content_disposition_type='attachment' if download else 'inline')
+    filename = re.sub(r'[<>:"/\\|?*\x00-\x1f]', '_', serialize(record)['original_name'])
+    response = FileResponse(path, media_type=record.mime, filename=filename, content_disposition_type='attachment' if download else 'inline')
     response.headers['X-Content-Type-Options'] = 'nosniff'
     response.headers['Cache-Control'] = 'private, no-store'
     return response
