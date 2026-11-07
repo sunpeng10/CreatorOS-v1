@@ -1,0 +1,16 @@
+{
+  "name": "creatoros-desktop",
+  "version": "0.1.1",
+  "private": true,
+  "description": "CreatorOS Windows desktop client",
+  "main": "main.cjs",
+  "scripts": {
+    "start": "electron .",
+    "test": "node --test *.test.cjs",
+    "package": "node package.cjs"
+  },
+  "devDependencies": {
+    "electron": "45.2.3",
+    "rcedit": "^5.0.2"
+  }
+}

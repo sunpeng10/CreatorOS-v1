@@ -1,5 +1,7 @@
 # CreatorOS · 爆款实验室
 
+Windows 桌面版可双击桌面的 **CreatorOS 爆款实验室** 图标，或项目根目录 `CreatorOS.cmd`。当前运行包在 `data/desktop/CreatorOS-0.1.1/CreatorOS.exe`，`data/desktop/current.json` 记录入口。窗口自动连接或启动本机服务，关闭窗口后分析服务继续运行。重新生成入口使用 `.\scripts\install-desktop.ps1`，仅恢复快捷方式使用 `-SkipBuild`。详见 [桌面版说明](docs/DESKTOP.md)。
+
 让每一次创作都有数据依据。面向 AI 工具、编程教育和知识科普创作者的本地研究工作台，以及用于验收第一单的老板后台。
 
 ## Windows 启动
