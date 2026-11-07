@@ -82,7 +82,7 @@ def public_services(db: Session = Depends(get_db)):
     owners = db.scalars(select(User).where(User.role == "OWNER_ADMIN").order_by(User.created_at, User.id)).all()
     if not owners:
         return {"items": [], "total": 0}
-    services = [item for item in rows(db, ServicePlan, owners[0]) if item.active]
+    services = sorted([item for item in rows(db, ServicePlan, owners[0]) if item.active], key=lambda item: (item.price, item.name, item.id))
     return listing([{"id": item.id, "name": item.name, "price": item.price, "description": (item.data or {}).get("description", ""), "features": (item.data or {}).get("features", []), "notice": "客户确认下单后，由老板接单处理"} for item in services])
 
 
@@ -154,8 +154,10 @@ def accept_order(order_id: str, body: dict = Body(default={}), db: Session = Dep
         return order_view(db, order)
     if order.status != "DELIVERED":
         fail("仅已交付的订单可以验收", 409)
+    if body.get('confirm_acceptance') is not True:
+        fail('请阅读验收提示并明确确认后再验收。', 422)
     order.status = "COMPLETED"
-    update_data(order, {"accepted_at": stamp(), "accepted_by": user.id, "feedback": str(body.get("feedback") or "")[:3000]})
+    update_data(order, {"completed_at": stamp(), "completed_by": user.id, 'acceptance_policy_version': '2026-11-08', 'acceptance_confirmed': True, "feedback": str(body.get("feedback") or "")[:3000]})
     db.add(AuditLog(organization_id=order.organization_id, actor_id=user.id, action="order.accepted", target_id=order.id))
     db.commit()
     return order_view(db, order)
@@ -201,7 +203,7 @@ def edit_lead(lead_id: str, body: dict = Body(...), db: Session = Depends(get_db
 
 @router.get("/admin/services")
 def admin_services(db: Session = Depends(get_db), user: User = Depends(require_admin)):
-    return listing(rows(db, ServicePlan, user))
+    return listing(sorted(rows(db, ServicePlan, user), key=lambda item: (item.price, item.name, item.id)))
 
 
 @router.post("/admin/services")

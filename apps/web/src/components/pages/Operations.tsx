@@ -661,6 +661,7 @@ export function Orders({ admin = false }: { admin?: boolean }) {
     [purchase, setPurchase] = useState(!admin && !!params.get("service_id")),
     [requestId, setRequestId] = useState(""),
     [completion, setCompletion] = useState<Row | null>(null),
+    [acceptance, setAcceptance] = useState<Row | null>(null),
     [delivery, setDelivery] = useState<Row | null>(null),
     [busy, setBusy] = useState(false),
     [error, setError] = useState(""),
@@ -673,6 +674,7 @@ export function Orders({ admin = false }: { admin?: boolean }) {
       setMessage(success);
       setDelivery(null);
       setCompletion(null);
+      setAcceptance(null);
       setPurchase(false);
       await r.refresh();
     } catch (e) {
@@ -799,16 +801,7 @@ export function Orders({ admin = false }: { admin?: boolean }) {
                     </Button>
                   )}
                   {o.status === "DELIVERED" && !admin && (
-                    <Button
-                      busy={busy}
-                      onClick={() =>
-                        action(
-                          `/orders/${o.id}/accept`,
-                          {},
-                          "报告已验收，订单完成。",
-                        )
-                      }
-                    >
+                    <Button busy={busy} onClick={() => setAcceptance(o)}>
                       <Check size={16} />
                       确认验收
                     </Button>
@@ -910,6 +903,46 @@ export function Orders({ admin = false }: { admin?: boolean }) {
               确认下单
             </Button>
           </form>
+        </Modal>
+      )}
+      {acceptance && (
+        <Modal
+          title="确认验收服务"
+          close={() => {
+            if (!busy) setAcceptance(null);
+          }}
+        >
+          <div className="stack">
+            <p>
+              是否确认已收到并验收“{acceptance.title}
+              ”的交付内容？确认后订单将标记为已完成。
+            </p>
+            <Notice tone="warning">
+              验收后不支持因个人原因退款；服务质量问题及依法应退款的情形除外。如有问题，可通过“服务与反馈”提交处理。
+            </Notice>
+            {error && <Notice tone="error">{error}</Notice>}
+            <div className="row-actions">
+              <Button
+                variant="secondary"
+                disabled={busy}
+                onClick={() => setAcceptance(null)}
+              >
+                暂不验收
+              </Button>
+              <Button
+                busy={busy}
+                onClick={() =>
+                  void action(
+                    `/orders/${acceptance.id}/accept`,
+                    { confirm_acceptance: true },
+                    "服务已验收，订单完成。",
+                  )
+                }
+              >
+                确认已收到并验收
+              </Button>
+            </div>
+          </div>
         </Modal>
       )}
       {completion && (

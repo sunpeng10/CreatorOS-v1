@@ -19,7 +19,7 @@ import { rows, useResource } from "@/lib/api";
 import { money } from "@/lib/format";
 import { DataForm, Notice } from "./ui";
 export default function Landing() {
-  const services = useResource("/services"),
+  const services = useResource("/services", 15000),
     me = useResource("/auth/me");
   return (
     <div className="landing">

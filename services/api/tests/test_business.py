@@ -23,7 +23,9 @@ def test_customer_loop_order_acceptance_revenue_and_delivery(business_client):
     assert http.get('/api/tickets').json()['total'] >= 1
     active['user'] = admin
     assert http.get('/api/admin/finance').json()['booked_revenue'] == 0
-    assert http.post(f'/api/admin/orders/{order["id"]}/accept').status_code == 200
+    accepted = http.post(f'/api/admin/orders/{order["id"]}/accept')
+    assert accepted.status_code == 200
+    owner_accepted_at = accepted.json()['accepted_at']
     assert http.post(f'/api/admin/orders/{order["id"]}/accept').status_code == 200
     assert http.get('/api/admin/finance').json()['booked_revenue'] == 9.9
     overview = http.get('/api/admin/overview').json()
@@ -33,7 +35,67 @@ def test_customer_loop_order_acceptance_revenue_and_delivery(business_client):
     active['user'] = customer
     assert http.get('/api/orders').json()['items'][0]['status'] == 'DELIVERED'
     assert any('已提供口语改进建议' in str(t['timeline']) for t in http.get('/api/tickets').json()['items'])
-    assert http.post(f'/api/orders/{order["id"]}/accept').json()['status'] == 'COMPLETED'
+    assert http.post(f'/api/orders/{order["id"]}/accept').status_code == 422
+    completed = http.post(f'/api/orders/{order["id"]}/accept', json={'confirm_acceptance': True}).json()
+    assert completed['status'] == 'COMPLETED'
+    assert completed['accepted_at'] == owner_accepted_at
+    assert completed['completed_by'] == customer.id
+    assert completed['acceptance_policy_version'] == '2026-11-08'
+
+
+def test_service_prices_are_sorted_and_edits_reach_public_listing(business_client):
+    http, _, _, _, _ = business_client
+    services = [http.post('/api/admin/services', json={'name': f'服务 {price}', 'price': price}).json() for price in [0, 299, 9.9]]
+    for path in ['/api/admin/services', '/api/services']:
+        assert [item['price'] for item in http.get(path).json()['items']] == [0, 9.9, 299]
+    assert http.patch('/api/admin/services/' + services[1]['id'], json={'price': 5, 'name': '修改后的服务'}).status_code == 200
+    for path in ['/api/admin/services', '/api/services']:
+        items = http.get(path).json()['items']
+        assert [item['price'] for item in items] == [0, 5, 9.9]
+        assert items[1]['name'] == '修改后的服务'
+
+
+def test_purge_order_removes_dependencies_and_restores_independent_inquiry(business_client, tmp_path):
+    import importlib.util
+    import sqlite3
+    from pathlib import Path
+    from app.models import Lead, Quote, Order, Ticket, Approval, AuditLog
+    _, factory, _, admin, customer = business_client
+    with factory() as db:
+        link = {'customer_user_id': customer.id, 'customer_organization_id': customer.organization_id}
+        lead = Lead(organization_id=admin.organization_id, contact=customer.email, need='独立咨询', status='WON', data={**link, 'timeline': [{'at': '2026-01-01', 'status': 'QUALIFIED'}]})
+        db.add(lead); db.flush()
+        quote = Quote(organization_id=admin.organization_id, lead_id=lead.id, amount=9999, data=link)
+        db.add(quote); db.flush()
+        order = Order(organization_id=admin.organization_id, quote_id=quote.id, amount=9999, status='COMPLETED', is_demo=False, data=link)
+        db.add(order); db.flush()
+        original = Ticket(organization_id=admin.organization_id, subject='原咨询', status='RESOLVED', data={**link, 'lead_id': lead.id, 'lead_status': 'WON', 'timeline': [{'note': '原咨询回复'}]})
+        associated = Ticket(organization_id=admin.organization_id, order_id=order.id, subject='测试订单工单', data=link)
+        approval = Approval(organization_id=admin.organization_id, kind='QUOTE', target_id=quote.id)
+        db.add_all([original, associated, approval]); db.flush()
+        db.add(AuditLog(organization_id=admin.organization_id, action='order.accepted', target_id=order.id))
+        db.add(AuditLog(organization_id=admin.organization_id, action='approval.decided', target_id=approval.id))
+        db.commit()
+        order_id, quote_id, lead_id, original_id = order.id, quote.id, lead.id, original.id
+    path = tmp_path / 'purge.sqlite'
+    raw = factory.kw['bind'].raw_connection()
+    target = sqlite3.connect(path)
+    raw.driver_connection.backup(target)
+    target.close(); raw.close()
+    script = Path(__file__).resolve().parents[3] / 'scripts' / 'purge_test_order.py'
+    spec = importlib.util.spec_from_file_location('purge_test_order', script)
+    module = importlib.util.module_from_spec(spec); spec.loader.exec_module(module)
+    module.purge_database(path, order_id, quote_id)
+    with sqlite3.connect(path) as db:
+        assert db.execute('select count(*) from orders where id=?', (order_id,)).fetchone()[0] == 0
+        assert db.execute('select count(*) from quotes where id=?', (quote_id,)).fetchone()[0] == 0
+        assert db.execute('select count(*) from approvals').fetchone()[0] == 0
+        assert db.execute('select count(*) from audit_logs').fetchone()[0] == 0
+        assert db.execute('select count(*) from tickets').fetchone()[0] == 1
+        assert db.execute('select status from leads where id=?', (lead_id,)).fetchone()[0] == 'QUALIFIED'
+        assert '原咨询回复' in db.execute('select data from tickets where id=?', (original_id,)).fetchone()[0]
+        assert db.execute('select count(*) from users').fetchone()[0] == 2
+        assert db.execute('pragma foreign_key_check').fetchall() == []
 
 
 def test_customer_loop_excludes_demo_records_and_denies_other_customer(business_client):
@@ -307,8 +369,8 @@ def test_order_requires_approval_customer_confirmation_and_successful_analysis(b
     assert http.post(url + "/simulate-payment").status_code == 410
     assert http.post(url + "/deliver", json={"analysis_id": analysis_id}).status_code == 200
     active['user'] = customer
-    assert http.post("/api/orders/" + order["id"] + "/accept").json()["status"] == "COMPLETED"
-    assert http.post("/api/orders/" + order["id"] + "/accept").status_code == 200
+    assert http.post("/api/orders/" + order["id"] + "/accept", json={'confirm_acceptance': True}).json()["status"] == "COMPLETED"
+    assert http.post("/api/orders/" + order["id"] + "/accept", json={'confirm_acceptance': True}).status_code == 200
     active['user'] = admin
     assert http.get("/api/admin/finance").json()['booked_revenue'] == 49
 
@@ -410,7 +472,7 @@ def test_authenticated_customer_order_delivery_acceptance_and_refund(business_cl
     assert http.post("/api/orders/" + order["id"] + "/accept").status_code == 404
     active["user"] = client
     assert http.get("/api/orders").json()["items"][0]["id"] == order["id"]
-    assert http.post("/api/orders/" + order["id"] + "/accept").status_code == 200
+    assert http.post("/api/orders/" + order["id"] + "/accept", json={'confirm_acceptance': True}).status_code == 200
     ticket = http.post("/api/tickets", json={"subject": "退款申请", "kind": "REFUND", "order_id": order["id"]}).json()
     active["user"] = admin
     approval = next(item for item in http.get("/api/approvals").json()["items"] if item["target_id"] == ticket["id"])
