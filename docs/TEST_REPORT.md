@@ -1,0 +1,25 @@
+# CreatorOS 验收记录 · 2026-11-07
+
+实际服务运行于 `http://127.0.0.1:3000`，API 文档在 `http://127.0.0.1:8000/docs`。在已安装锁定依赖的环境执行了 `setup.ps1 -SkipInstall`、`start.ps1`、`stop.ps1` 和生产重启，前后端健康检查均返回 200。SQLite `integrity_check` 返回 `ok`，Alembic 无待生成迁移。
+
+## 自动检查
+
+- **pytest 44 项通过**。覆盖本地会话、组织隔离、管理员权限、跨域提交拒绝、伪造图片和损坏视频、图集顺序、缺失 Key、空对标库、指标缺失、CSV 去重、XLSX 映射与损坏、审批和订单状态、Demo 退款、任务取消竞态、429 退避、无效 JSON 的费用记录、失败节点恢复与缓存。Starlette 测试客户端有一条 httpx 弃用提示。
+- **Vitest 7 项通过**，包括附件总量限制和登录表单在页面脚本就绪前的保护。前端 ESLint、TypeScript 和 Next.js webpack 生产构建通过。Python Ruff 未发现未定义名称或无用导入。`npm audit --omit=dev` 报告 0 个生产依赖漏洞。开发工具依赖还有 8 项 moderate 提示。
+
+## 浏览器验收
+
+Playwright 启动了本机已安装的 Edge `156.0.4314.58` 和此前的 Chrome `156.0.8078.81`，使用隔离会话及测试数据。后续验收按用户要求仅使用 Edge。
+
+- 实际点击注册、上传、开始本地分析、保存版本、添加 Demo 样本、推荐、指标预览和导入。四秒测试视频识别 2 个镜头并抽出 3 帧，报告七阶段全部完成，Markdown 下载返回 200。指标导入 3 个快照，趋势图生成。验证 390px 视口无横向溢出。
+- 实际测试登录、老板审批、模拟支付、报告交付与客户确认验收。未批准报价生成订单返回 409。客户访问管理员接口返回 403，管理员越权读取客户素材返回 404。
+- 首笔持久化 Demo 订单 `3e0080e5-cc8d-4377-bf1c-c5a57c5b1979` 的支付 `DEMO_PAID`、交付 `DELIVERED`、订单 `COMPLETED`。金额 ¥99。后续验收使用同样明确标记的独立 Demo 订单，周报真实收入为 ¥0。
+- 初次 Chrome 测试发现登录页面脚本加载前的原生 GET 提交问题。认证表单现在明确使用 POST，脚本就绪前禁用提交。已轮换生成的测试管理员密码、撤销旧会话、脱敏访问日志。修复后的生产浏览器验收通过。
+
+## MiMo 实际请求
+
+官方模型列表返回 200。使用四秒 TEST 视频发起显式同意的任务 `74b54af4-38fa-4591-a08f-717df6f18ff4`，本地预算上限 ¥0.25。
+
+`mimo-v2.6-flash` 成功返回视频理解。首次 Pro 的完整报告结构校验失败，系统保存调用费用及失败状态。缩小 Pro 草案的结构后，从策略失败节点重试，复用了 Flash 输出，最终七阶段成功，报告 `source=mimo`。Flash 节点执行 1 次，策略节点执行 2 次。任务累计估算 ¥0.063198，包含首轮无效结构响应。实际账单以 MiMo 控制台为准。
+
+最终通过 Edge 复查同一份 MiMo 报告以及客户和老板主要路由，未新增模型请求。截图见 [首页](screenshots/edge-01-home.png)、[本地报告](screenshots/edge-02-report.png)、[指标趋势](screenshots/edge-03-analytics.png)、[Demo 订单](screenshots/edge-04-orders.png)、[经营周报](screenshots/edge-05-finance.png)、[移动界面](screenshots/edge-06-mobile.png)、[MiMo 报告](screenshots/edge-07-mimo.png) 和 [老板总览](screenshots/edge-08-admin.png)。完整运行数据在 Git 忽略的 `data/browser-*.json`，端到端脚本见 `scripts/browser-e2e.cjs`。

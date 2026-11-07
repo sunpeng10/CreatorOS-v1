@@ -1,0 +1,5 @@
+title,platform,author,category,text,views,likes,comments,shares,favorites,is_demo,collected_at
+DEMO · 用三分钟解释 Python 函数,DEMO,DEMO 教学账号,编程,函数 入门 案例 对比,100,10,2,1,4,true,2026-11-01T00:00:00Z
+DEMO · Python 自动化脚本入门,DEMO,DEMO 教学账号,编程,自动化 教学 问题 方案,200,15,3,2,6,true,2026-11-02T00:00:00Z
+DEMO · 用调试器理解 Python 错误,DEMO,DEMO 教学账号,编程,调试 错误 教学,300,20,4,3,8,true,2026-11-03T00:00:00Z
+DEMO · 如何评估 AI 工具的可靠性,DEMO,DEMO 科普账号,AI 工具,AI 工具 验证 边界,,,,,,true,2026-11-03T00:00:00Z

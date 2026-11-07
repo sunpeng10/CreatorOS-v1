@@ -1,0 +1,4 @@
+title,views,likes,comments,shares,favorites,impressions,followers,observed_at,category,platform,is_demo
+DEMO Python 函数讲解,100,10,2,1,4,200,,2026-11-01,编程,DEMO,true
+DEMO Python 函数讲解,160,14,3,2,6,300,,2026-11-03,编程,DEMO,true
+DEMO AI 工具验证,90,8,,1,,180,,2026-11-02,AI 工具,DEMO,true
