@@ -1,7 +1,6 @@
 "use client";
 import Link from "next/link";
 import { Suspense } from "react";
-import Shell from "./Shell";
 import { Loading } from "./ui";
 import Dashboard from "./pages/Dashboard";
 import { Analyze, AnalysisReport } from "./pages/Analysis";
@@ -94,9 +93,5 @@ export default function Workspace({ path }: { path: string }) {
         </div>
       );
   }
-  return (
-    <Shell admin={path.startsWith("admin")}>
-      <Suspense fallback={<Loading />}>{page}</Suspense>
-    </Shell>
-  );
+  return <Suspense fallback={<Loading />}>{page}</Suspense>;
 }

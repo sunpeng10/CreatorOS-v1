@@ -56,13 +56,12 @@ function ScanIcon({ size = 19 }: { size?: number }) {
 }
 export default function Shell({
   children,
-  admin = false,
 }: {
   children: ReactNode;
-  admin?: boolean;
 }) {
   const path = usePathname(),
     router = useRouter();
+  const admin = path === "/admin" || path.startsWith("/admin/");
   const [user, setUser] = useState<Row | null>(null),
     [error, setError] = useState(""),
     [open, setOpen] = useState(false);
