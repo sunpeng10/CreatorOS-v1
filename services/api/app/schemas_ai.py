@@ -16,6 +16,18 @@ class Finding(TypedModel):
     kind: Literal["直接观察", "数据支持", "推测/建议"] = "直接观察"
 
 
+class FactCheck(TypedModel):
+    claim: str
+    status: Literal['verified', 'correction', 'unverified']
+    finding: str
+    recommendation: str
+    source_urls: list[str] = Field(default_factory=list)
+
+
+class FactCheckDraft(TypedModel):
+    checks: list[FactCheck]
+
+
 class Report(TypedModel):
     summary: str = Field(min_length=1)
     findings: list[Finding] = Field(min_length=1)
@@ -29,6 +41,11 @@ class Report(TypedModel):
     experiments: list[str] = Field(default_factory=list)
     requires_human_review: bool = False
     review_reason: str = ""
+    media_received: bool = False
+    media_notes: list[str] = Field(default_factory=list)
+    search_status: str = 'not_requested'
+    fact_checks: list[FactCheck] = Field(default_factory=list)
+    sources: list[dict] = Field(default_factory=list)
 
 
 class COOInput(TypedModel):
@@ -60,6 +77,8 @@ class ContentOutput(TypedModel):
     limitations: list[str]
     requires_human_review: bool = False
     review_reason: str = ""
+    media_received: bool = False
+    media_notes: list[str] = Field(default_factory=list)
 
 
 class DataInput(TypedModel):
@@ -77,11 +96,15 @@ class DataOutput(TypedModel):
 class RetrievalInput(TypedModel):
     query: str
     candidates: list[dict]
+    visual_observations: list[str] = Field(default_factory=list)
 
 
 class RetrievalOutput(TypedModel):
     matches: list[dict]
     limitations: list[str]
+    search_status: str = 'not_requested'
+    fact_checks: list[FactCheck] = Field(default_factory=list)
+    sources: list[dict] = Field(default_factory=list)
 
 
 class StrategyInput(TypedModel):

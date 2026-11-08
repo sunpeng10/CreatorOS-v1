@@ -1,4 +1,3 @@
-import mimetypes
 import os
 import re
 from pathlib import Path
@@ -15,6 +14,7 @@ from .auth import current_user, owned
 from .customer_links import customer_for, is_demo_record
 from .db import DATA_DIR, get_db
 from .media import parse_media, video_frames
+from .media_types import asset_mime
 from .models import Approval, AuditLog, ContentAnalysis, ContentAsset, ContentItem, CreatorAccount, Experiment, Order, User, serialize
 
 router = APIRouter(prefix='/api', tags=['素材与工作台'])
@@ -137,7 +137,7 @@ def upload(files: list[UploadFile] = File(...), title: str = Form(...), text: st
                 raise HTTPException(422, '不能上传空文件')
             info = parse_media(destination, suffix, int(os.getenv('MAX_VIDEO_SECONDS', '600')))
             metadata_list.append(info)
-            mime = {'.md': 'text/markdown', '.srt': 'text/plain', '.vtt': 'text/vtt', '.mov': 'video/quicktime'}.get(suffix) or mimetypes.guess_type(original)[0] or 'application/octet-stream'
+            mime = asset_mime(original)
             asset = ContentAsset(organization_id=user.organization_id, content_id=item.id, path=str(destination.resolve()), original_name=original, mime=mime, size=size, data={'position': position, 'metadata': info, 'role': 'original'})
             db.add(asset)
             db.flush()
@@ -176,7 +176,7 @@ def asset(identifier: str, download: bool = False, user: User = Depends(current_
     if not path.is_relative_to(UPLOAD_DIR.resolve()) or not path.is_file():
         raise HTTPException(404, '素材文件不存在')
     filename = re.sub(r'[<>:"/\\|?*\x00-\x1f]', '_', serialize(record)['original_name'])
-    response = FileResponse(path, media_type=record.mime, filename=filename, content_disposition_type='attachment' if download else 'inline')
+    response = FileResponse(path, media_type=asset_mime(record.original_name, record.mime), filename=filename, content_disposition_type='attachment' if download else 'inline')
     response.headers['X-Content-Type-Options'] = 'nosniff'
     response.headers['Cache-Control'] = 'private, no-store'
     return response

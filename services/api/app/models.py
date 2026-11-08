@@ -7,6 +7,7 @@ from sqlalchemy.ext.mutable import MutableDict
 from sqlalchemy.orm import Mapped, mapped_column, object_session
 
 from .db import Base
+from .media_types import asset_mime
 
 
 def stamp():
@@ -254,6 +255,7 @@ def serialize(obj):
         result[column.key] = value.isoformat() if isinstance(value, datetime) else value
     result['data'] = dict(obj.data or {})
     if isinstance(obj, ContentAsset):
+        result['mime'] = asset_mime(obj.original_name, obj.mime)
         db = object_session(obj)
         content = db.get(ContentItem, obj.content_id) if db else None
         title = content.title if content and content.organization_id == obj.organization_id else '作品'

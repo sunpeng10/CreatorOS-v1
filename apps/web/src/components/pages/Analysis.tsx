@@ -8,6 +8,7 @@ import {
   Download,
   FileText,
   ImageIcon,
+  LoaderCircle,
   MoreHorizontal,
   ChevronDown,
   Plus,
@@ -24,6 +25,7 @@ import {
   dateLabel,
   label,
   money,
+  safeExternalUrl,
   validateFiles,
 } from "@/lib/format";
 import {
@@ -41,6 +43,7 @@ import {
   Status,
 } from "../ui";
 import { ChineseDateInput, EditableChoice } from "../ContentFields";
+import { ReportMedia } from "../ReportMedia";
 import { CONTENT_CATEGORIES, CONTENT_PLATFORMS } from "@/lib/content-options";
 
 function UploadPreview({ file, name }: { file: File; name: string }) {
@@ -236,6 +239,7 @@ export function Analyze() {
                 if (mode === "ai")
                   await post(`/analyses/${analysis.id}/start`, {
                     confirm_paid: consent,
+                    allow_web_search: consent,
                     budget: Number(form.get("budget") || 1),
                   });
                 router.push(`/analyses/${analysis.id}`);
@@ -441,7 +445,8 @@ export function Analyze() {
                     onChange={(e) => setConsent(e.target.checked)}
                   />
                   <span>
-                    我同意发送分析所需内容，并在上述预算内调用付费 AI。
+                    我同意发送分析所需内容，并在上述预算内调用付费 AI
+                    识别画面、联网核查公开事实。
                   </span>
                 </label>
               </div>
@@ -662,6 +667,7 @@ export function Analyze() {
 }
 
 export function AnalysisReport({ id }: { id: string }) {
+  const router = useRouter();
   const r = useResource(`/analyses/${id}`);
   const content = useResource(
       r.data?.content_id ? `/contents/${r.data.content_id}` : null,
@@ -674,6 +680,9 @@ export function AnalysisReport({ id }: { id: string }) {
     [error, setError] = useState(""),
     [message, setMessage] = useState(""),
     [busy, setBusy] = useState(false);
+  const [previewRefresh, setPreviewRefresh] = useState(false);
+  const [selectedTask, setSelectedTask] = useState<number | null>(null);
+  const [createdExperiment, setCreatedExperiment] = useState<Row | null>(null);
   const data = r.data,
     report = data?.report || {};
   useEffect(() => {
@@ -687,9 +696,9 @@ export function AnalysisReport({ id }: { id: string }) {
       !["QUEUED", "RUNNING", "WAITING_APPROVAL"].includes(data.status)
     )
       return;
-    const t = setInterval(() => void r.refresh(), 2500);
+    const t = setInterval(() => void r.refresh(true), 2500);
     return () => clearInterval(t);
-  }, [data, r.refresh, r]);
+  }, [data?.status, r.refresh]);
   async function taskAction(action: string) {
     setBusy(true);
     setError("");
@@ -706,6 +715,37 @@ export function AnalysisReport({ id }: { id: string }) {
   if (r.error) return <Notice tone="error">{r.error}</Notice>;
   if (!data) return null;
   const steps = rows(data.steps || data.task?.steps || []);
+  const identityAdvice = /作者.{0,20}(真实性|资质)|账号资质|身份真实性/;
+  const suggestions = (report.tasks || [])
+    .map((task: string, index: number) => ({ text: String(task), index }))
+    .filter((task: { text: string }) => !identityAdvice.test(task.text));
+  const reviews = (report.fact_checks || []).filter(
+    (check: Row) => check.status !== "verified",
+  );
+  const visualAssets = (content.data?.assets || []).some((asset: Row) =>
+    /^(image|video)\//.test(asset.mime || ""),
+  );
+  const mediaReceived =
+    report.media_received ??
+    !!steps.find((step) => step.name === "content")?.output?.visual_observations
+      ?.length;
+  const reportNotes = [
+    ...(report.media_notes || []),
+    ...(data.mode === "local"
+      ? ["本地分析未调用模型；识别画面与联网核查请使用 MiMo 深度分析。"]
+      : []),
+    ...(data.mode === "ai" && visualAssets && !mediaReceived
+      ? ["此报告未包含画面识别，请重新识别与核查以更新建议。"]
+      : []),
+    ...(data.mode === "ai" &&
+    ["unavailable", "no_sources"].includes(report.search_status)
+      ? ["本次联网核查未完成，相关事实已列入待审阅项。"]
+      : []),
+    ...(data.mode === "ai" &&
+    (!report.search_status || report.search_status === "not_requested")
+      ? ["此报告未进行联网核查，可重新识别与核查。"]
+      : []),
+  ];
   return (
     <>
       <PageHeading
@@ -733,6 +773,12 @@ export function AnalysisReport({ id }: { id: string }) {
               <Button variant="secondary" onClick={() => window.print()}>
                 <Printer size={16} />
                 打印
+              </Button>
+              <Button
+                variant="secondary"
+                onClick={() => setPreviewRefresh(true)}
+              >
+                重新识别与核查
               </Button>
             </div>
           ) : undefined
@@ -791,7 +837,17 @@ export function AnalysisReport({ id }: { id: string }) {
                       : "step-number"
                   }
                 >
-                  {s.status === "SUCCEEDED" ? <Check size={15} /> : i + 1}
+                  {s.status === "SUCCEEDED" ? (
+                    <Check size={15} aria-label="运行成功" />
+                  ) : s.status === "RUNNING" ? (
+                    <LoaderCircle
+                      className="spin"
+                      size={17}
+                      aria-label="正在运行"
+                    />
+                  ) : (
+                    i + 1
+                  )}
                 </span>
                 <div>
                   <h3>{s.name}</h3>
@@ -811,38 +867,10 @@ export function AnalysisReport({ id }: { id: string }) {
         </Card>
       )}
       {content.data?.assets?.length > 0 && (
-        <Card title="原始素材" subtitle="私有访问 · 按上传顺序显示">
-          <div className="asset-grid">
-            {content.data.assets.map((a: Row) => (
-              <div key={a.id}>
-                {a.mime?.startsWith("image/") ? (
-                  <img src={`/api/assets/${a.id}`} alt={a.original_name} />
-                ) : a.mime?.startsWith("video/") ? (
-                  <video
-                    src={`/api/assets/${a.id}`}
-                    controls
-                    preload="metadata"
-                  />
-                ) : (
-                  <FileText size={28} />
-                )}
-                <a
-                  href={`/api/assets/${a.id}`}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                >
-                  {a.original_name}
-                </a>
-              </div>
-            ))}
-          </div>
-          {content.data.metadata && (
-            <JsonDetails
-              data={content.data.metadata}
-              title="本地媒体解析与元数据"
-            />
-          )}
-        </Card>
+        <ReportMedia
+          assets={content.data.assets}
+          metadata={content.data.metadata}
+        />
       )}
       {Object.keys(report).length > 0 ? (
         <>
@@ -858,26 +886,35 @@ export function AnalysisReport({ id }: { id: string }) {
             subtitle="请将直接观察、数据支持与推测分开理解"
           >
             <div className="findings">
-              {(report.findings || []).map((f: any, i: number) => (
-                <article key={i}>
-                  <div className="finding-index">
-                    {String(i + 1).padStart(2, "0")}
-                  </div>
-                  <div>
-                    <div className="row-actions">
-                      <h3>{f.label || f.title || "观察"}</h3>
-                      <Badge>{f.kind || "直接观察"}</Badge>
+              {(report.findings || [])
+                .filter(
+                  (finding: Row) =>
+                    !identityAdvice.test(
+                      `${finding.label} ${finding.evidence}`,
+                    ),
+                )
+                .map((f: any, i: number) => (
+                  <article key={i}>
+                    <div className="finding-index">
+                      {String(i + 1).padStart(2, "0")}
                     </div>
-                    <p>{f.evidence || f.description || "证据不足"}</p>
-                    <div className="row-actions">
-                      <Badge>{f.location || f.timecode || "文本 / 全文"}</Badge>
-                      <Badge>
-                        置信度：{f.confidence ?? "insufficient_data"}
-                      </Badge>
+                    <div>
+                      <div className="row-actions">
+                        <h3>{f.label || f.title || "观察"}</h3>
+                        <Badge>{f.kind || "直接观察"}</Badge>
+                      </div>
+                      <p>{f.evidence || f.description || "证据不足"}</p>
+                      <div className="row-actions">
+                        <Badge>
+                          {f.location || f.timecode || "文本 / 全文"}
+                        </Badge>
+                        <Badge>
+                          置信度：{f.confidence ?? "insufficient_data"}
+                        </Badge>
+                      </div>
                     </div>
-                  </div>
-                </article>
-              ))}
+                  </article>
+                ))}
             </div>
           </Card>
           <div className="two-columns">
@@ -905,22 +942,61 @@ export function AnalysisReport({ id }: { id: string }) {
               subtitle="选择一个变量，开始下一次创作实验"
             >
               <ul className="task-list">
-                {(report.tasks || []).map((t: any, i: number) => (
-                  <li key={i}>
-                    <Check size={16} />
-                    {typeof t === "string"
-                      ? t
-                      : t.task || t.description || JSON.stringify(t)}
+                {suggestions.map((task: { text: string; index: number }) => (
+                  <li key={task.index}>
+                    <label
+                      className={`recommended-task ${selectedTask === task.index ? "selected" : ""}`}
+                    >
+                      <input
+                        type="radio"
+                        name="recommended_task"
+                        checked={selectedTask === task.index}
+                        onChange={() => {
+                          setSelectedTask(task.index);
+                          setCreatedExperiment(null);
+                        }}
+                      />
+                      <span>{task.text}</span>
+                      <small>（推荐）</small>
+                    </label>
                   </li>
                 ))}
               </ul>
-              <Link
-                className="btn btn-secondary mt-6"
-                href={`/experiments?analysis_id=${id}&content_id=${data.content_id}`}
+              <Button
+                variant="secondary"
+                className="mt-6"
+                busy={busy}
+                disabled={selectedTask === null}
+                onClick={async () => {
+                  setBusy(true);
+                  setError("");
+                  try {
+                    setCreatedExperiment(
+                      await post(`/analyses/${id}/experiments`, {
+                        task_index: selectedTask,
+                      }),
+                    );
+                  } catch (error) {
+                    setError((error as Error).message);
+                  } finally {
+                    setBusy(false);
+                  }
+                }}
               >
                 创建关联实验
                 <ArrowRight size={16} />
-              </Link>
+              </Button>
+              {createdExperiment && (
+                <Notice tone="success">
+                  实验创建完毕。
+                  <Link
+                    className="text-link"
+                    href={`/experiments?experiment_id=${createdExperiment.id}`}
+                  >
+                    点击查看
+                  </Link>
+                </Notice>
+              )}
             </Card>
           </div>
           <Card
@@ -986,15 +1062,37 @@ export function AnalysisReport({ id }: { id: string }) {
               </div>
             )}
           </Card>
-          {report.limitations?.length > 0 && (
-            <Notice tone="warning">
-              <strong>结论边界与缺失信息</strong>
-              <ul>
-                {report.limitations.map((s: string, i: number) => (
-                  <li key={i}>{s}</li>
-                ))}
-              </ul>
-            </Notice>
+          {reviews.length > 0 && (
+            <Card
+              title="事实核查待审阅"
+              subtitle="仅列出查询发现的偏差或未查到可靠依据的事项"
+            >
+              {reviews.map((check: Row, index: number) => (
+                <div className="fact-review" key={index}>
+                  <h3>{check.claim}</h3>
+                  <p>{check.finding}</p>
+                  <p>{check.recommendation}</p>
+                  {(check.source_urls || []).map((url: string) => (
+                    <a
+                      className="text-link"
+                      key={url}
+                      href={safeExternalUrl(url) || undefined}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                    >
+                      {(report.sources || []).find(
+                        (source: Row) => source.url === url,
+                      )?.title || "查看查询来源"}
+                    </a>
+                  ))}
+                </div>
+              ))}
+            </Card>
+          )}
+          {reportNotes.length > 0 && (
+            <p className="muted report-footnote">
+              {[...new Set(reportNotes)].join(" ")}
+            </p>
           )}
         </>
       ) : data.status === "FAILED" ? (
@@ -1007,6 +1105,70 @@ export function AnalysisReport({ id }: { id: string }) {
         <Empty title="报告将在任务完成后显示">
           本地解析与研究步骤正在保存到工作区。
         </Empty>
+      )}
+      {previewRefresh && (
+        <Modal
+          title="重新识别画面与联网核查"
+          close={() => {
+            if (!busy) setPreviewRefresh(false);
+          }}
+        >
+          <form
+            className="stack"
+            onSubmit={async (event) => {
+              event.preventDefault();
+              const form = new FormData(event.currentTarget);
+              setBusy(true);
+              setError("");
+              try {
+                const next = await post("/analyses", {
+                  content_id: data.content_id,
+                  mode: "ai",
+                });
+                if (next.status !== "SUCCEEDED")
+                  await post(`/analyses/${next.id}/start`, {
+                    confirm_paid: true,
+                    allow_web_search: true,
+                    budget: Number(form.get("budget")),
+                  });
+                setPreviewRefresh(false);
+                router.push(`/analyses/${next.id}`);
+              } catch (error) {
+                setError((error as Error).message);
+              } finally {
+                setBusy(false);
+              }
+            }}
+          >
+            <p>
+              使用当前素材重新生成创作建议，包含图片/视频识别和公开事件联网核查。旧报告保留。
+            </p>
+            <Field
+              label="本次预算上限（元）"
+              hint="单次最高 10 元，含联网调用的费用估算。"
+            >
+              <input
+                name="budget"
+                type="number"
+                min="0.01"
+                max="10"
+                step="0.01"
+                defaultValue={Math.min(data.task?.budget || 1, 10)}
+                required
+              />
+            </Field>
+            <label className="check">
+              <input type="checkbox" required />
+              <span>
+                我同意发送本次分析所需素材，并在上述预算内调用 MiMo 与联网搜索。
+              </span>
+            </label>
+            {error && <Notice tone="error">{error}</Notice>}
+            <Button type="submit" busy={busy}>
+              确认开始
+            </Button>
+          </form>
+        </Modal>
       )}
     </>
   );

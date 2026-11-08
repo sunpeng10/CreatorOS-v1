@@ -6,6 +6,7 @@ import hashlib
 import json
 import math
 import re
+import io
 from pathlib import Path
 
 from sqlalchemy import select, update
@@ -14,13 +15,15 @@ from fastapi import HTTPException
 
 from .db import SessionLocal
 from .mimo import MiMoClient, MiMoError
+from .media_types import asset_mime
+from .fact_check import grounded_checks
 from .models import (AgentRun, AgentStep, AnalysisEvidence, Approval, AuditLog, BenchmarkItem,
                      ContentAnalysis, ContentAsset, CostEvent, MetricSnapshot, User, serialize, stamp)
 from .schemas_ai import (SCHEMAS, BusinessOutput, ContentOutput, COOOutput, DataOutput,
-                         Finding, QualityOutput, Report, RetrievalOutput, StrategyDraft, StrategyOutput)
+                         FactCheck, FactCheckDraft, Finding, QualityOutput, Report, RetrievalOutput, StrategyDraft, StrategyOutput)
 
 STAGES = ["COO", "content", "data", "retrieval", "strategy", "quality", "business"]
-PIPELINE_VERSION = "creatoros-1.0"
+PIPELINE_VERSION = "creatoros-1.1-media-facts"
 
 
 def local_report(content: dict) -> Report:
@@ -70,9 +73,10 @@ def cache_key(snapshot):
     return hashlib.sha256(json.dumps(snapshot, ensure_ascii=False, sort_keys=True, default=str).encode()).hexdigest()
 
 
-def create_run(db, analysis, snapshot, budget, paid_consent):
+def create_run(db, analysis, snapshot, budget, paid_consent, web_search_consent=False):
     run = AgentRun(organization_id=analysis.organization_id, analysis_id=analysis.id, status="QUEUED",
                    budget=budget, cost=0, error="", data={"snapshot": snapshot, "paid_consent": paid_consent,
+                                                        'web_search_consent': web_search_consent,
                                                         "currency": "CNY", "cost_is_estimate": True})
     db.add(run)
     db.flush()
@@ -133,32 +137,48 @@ def _retrieval(query, candidates):
 
 def _media_parts(db, snapshot):
     parts, limitations, token_reserve = [], [], 0
+    large_batch = sum(item.get('size', 0) for item in snapshot['assets'] if item.get('role') != 'keyframe') > 35 * 1024 * 1024
+    def image_part(path, mime):
+        payload = path.read_bytes()
+        if len(payload) > 2 * 1024 * 1024:
+            from PIL import Image, ImageOps
+            with Image.open(path) as source:
+                image = ImageOps.exif_transpose(source).convert('RGB')
+                image.thumbnail((2048, 2048))
+                output = io.BytesIO(); image.save(output, format='JPEG', quality=88)
+                payload, mime = output.getvalue(), 'image/jpeg'
+        return {'type': 'image_url', 'image_url': {'url': f'data:{mime};base64,' + base64.b64encode(payload).decode('ascii')}}
     for item in snapshot["assets"]:
         # Generated keyframes are represented by the original video when it fits; do not bill duplicates.
         if item.get("data", {}).get("generated") or item.get("data", {}).get("is_keyframe") or item.get("data", {}).get("role") == "keyframe":
             continue
-        mime = item.get("mime", "")
-        if not (mime.startswith("image/") or mime.startswith("video/")):
-            continue
-        if len(parts) >= 8:
-            limitations.append("超过 8 个媒体输入，其余媒体未发送模型。")
-            break
         asset = db.get(ContentAsset, item["id"])
         if not asset or asset.organization_id != snapshot["content"]["organization_id"]:
             raise MiMoError("MISSING_ASSET", "分析快照中的私有素材不存在。")
         path = Path(asset.path)
+        mime = asset_mime(path.name, asset.mime)
+        if not (mime.startswith('image/') or mime.startswith('video/')):
+            continue
         if not path.is_file():
             raise MiMoError("MISSING_ASSET", "素材文件不可读，请重新上传。")
         size = path.stat().st_size
         # 35 MiB raw gives < 50 MiB base64; also bound the complete request below.
-        if size > (35 if mime.startswith("video/") else 12) * 1024 * 1024:
-            limitations.append(f"{item.get('original_name', '素材')} 超出本地直传上限，未发送模型；请压缩、裁剪后重试。")
+        if mime.startswith('video/') and (large_batch or size > 35 * 1024 * 1024):
+            frame_ids = {frame['asset_id'] for frame in (asset.data or {}).get('keyframes', [])}
+            frames = [frame for frame in db.scalars(select(ContentAsset).where(ContentAsset.content_id == asset.content_id, ContentAsset.organization_id == asset.organization_id)).all()
+                      if frame.id in frame_ids or ((frame.data or {}).get('role') == 'keyframe' and Path(frame.path).stem.startswith(path.stem + '-frame-'))][:8]
+            if not frames:
+                raise MiMoError('MISSING_KEYFRAMES', '大视频缺少可识别画面，请重新上传视频以提取关键帧。')
+            for frame in frames:
+                parts.append({'type': 'text', 'text': f'{item.get("original_name", "视频")}，关键帧时间 {frame.data.get("timecode", 0)} 秒'})
+                parts.append(image_part(Path(frame.path), 'image/jpeg'))
+                token_reserve += 16384
+            limitations.append('较大视频已发送实际关键帧识别；口播内容参考所提供的字幕或文稿。')
             continue
         if mime.startswith("video/"):
             duration = (item.get("data", {}).get("metadata") or {}).get("duration")
             if not duration:
-                limitations.append("视频时长元数据缺失，无法估算输入成本；未发送此视频。")
-                continue
+                raise MiMoError('MISSING_VIDEO_METADATA', '视频时长信息缺失，请重新上传后再识别。')
             data_url = f"data:{mime};base64," + base64.b64encode(path.read_bytes()).decode("ascii")
             parts.append({"type": "video_url", "video_url": {"url": data_url}, "fps": 2, "media_resolution": "default"})
             # Official default resolution caps each temporal grid at ~300 visual tokens;
@@ -166,8 +186,7 @@ def _media_parts(db, snapshot):
             grids = max(1, math.ceil(min(2048, math.ceil(float(duration) * 2)) / 2))
             token_reserve += math.ceil((grids * 305 + float(duration) * 6.25 + 4) * 1.25)
         else:
-            data_url = f"data:{mime};base64," + base64.b64encode(path.read_bytes()).decode("ascii")
-            parts.append({"type": "image_url", "image_url": {"url": data_url}})
+            parts.append(image_part(path, mime))
             token_reserve += 16384
     if sum(len(json.dumps(p)) for p in parts) > 49 * 1024 * 1024:
         raise MiMoError("MEDIA_TOO_LARGE", "媒体合计 Base64 超过本地请求上限，请缩减图集或裁剪视频。")
@@ -183,12 +202,13 @@ def _stage_input(name, snapshot, outputs, run):
     if name == "data":
         return {"snapshots": snapshot["metrics"]}
     if name == "retrieval":
-        return {"query": content.get("title", "") + " " + content.get("text", "")[:500], "candidates": snapshot["benchmarks"]}
+        return {"query": content.get("title", "") + " " + content.get("text", "")[:500], "candidates": snapshot["benchmarks"],
+                'visual_observations': outputs['content'].get('visual_observations', [])}
     if name == "strategy":
         return {"content": content, "breakdown": outputs["content"], "data": outputs["data"], "retrieval": outputs["retrieval"]}
     if name == "quality":
-        return {"report": outputs["strategy"], "allowed_urls": [b.get("url", "") for b in snapshot["benchmarks"] if b.get("url")],
-                "media_received": bool(outputs["content"].get("visual_observations"))}
+        return {"report": outputs["strategy"], "allowed_urls": [b.get("url", "") for b in snapshot["benchmarks"] if b.get("url")] + [source['url'] for source in outputs['retrieval'].get('sources', [])],
+                "media_received": bool(outputs["content"].get("media_received"))}
     return {"analysis_id": run.analysis_id, "report": outputs["quality"]["report"]}
 
 
@@ -229,14 +249,15 @@ def _execute_stage(name, inputs, db, run, step, snapshot, adapter):
                         data={**event, "run_id": run.id, "step": name}))
         db.commit()
 
-    def model_call(schema, prompt, media=None, media_tokens=0, model=None, max_output_tokens=4096):
+    def model_call(schema, prompt, media=None, media_tokens=0, model=None, max_output_tokens=4096, web_search=False, on_sources=None):
         if not run.data.get("paid_consent"):
             raise MiMoError("PAID_CONSENT_REQUIRED", "付费分析需要明确授权。")
         content = [{"type": "text", "text": prompt}] + (media or [])
+        search_options = {'web_search': True, 'on_sources': on_sources} if web_search else {}
         return adapter.complete_json(schema, [{"role": "user", "content": content}], budget=run.budget,
                                      spent=lambda: run.cost, on_usage=record_usage, check_cancel=canceled,
                                      on_request=reserve_usage, on_validation_error=record_validation_error,
-                                     media_tokens=media_tokens, model=model, max_output_tokens=max_output_tokens)
+                                     media_tokens=media_tokens, model=model, max_output_tokens=max_output_tokens, **search_options)
 
     if name == "COO":
         return COOOutput(stages=STAGES, source_snapshot=snapshot["content"], paid_consent=bool(run.data.get("paid_consent")),
@@ -250,7 +271,10 @@ def _execute_stage(name, inputs, db, run, step, snapshot, adapter):
                  "无法核实的结论 confidence=insufficient_data。没有实际媒体输入时禁止声称看过画面。" \
                  "发现重大合规问题（侵权、未经许可披露个人资料、严重虚假宣传等）requires_human_review=true 并填写 review_reason，交人工审批。" \
                  "visual_observations 没有画面证据时返回空列表。作品数据：" + json.dumps(inputs, ensure_ascii=False)
+        prompt += ' 必须结合收到的图片/视频实际画面，识别可见文字、时间线、构图与关键动作；不评估作者身份真实性或账号资质，不要求额外证明作者身份。'
         result = model_call(ContentOutput, prompt, media, tokens)
+        result.media_received = bool(media)
+        result.media_notes = limits
         result.limitations += limits
         if not media:
             result.visual_observations = []
@@ -259,7 +283,33 @@ def _execute_stage(name, inputs, db, run, step, snapshot, adapter):
     if name == "data":
         return _data_output(inputs["snapshots"])
     if name == "retrieval":
-        return _retrieval(inputs["query"], inputs["candidates"])
+        result = _retrieval(inputs['query'], inputs['candidates'])
+        if local or not run.data.get('web_search_consent'):
+            return result
+        sources = []
+        try:
+            draft = model_call(FactCheckDraft,
+                '联网查询作品涉及的公开事件、日期、比分、数字与因果关系，优先官方来源。仅查询作品事实，不查询作者身份、联系方式或账号真实性。'
+                '对照查询来源与输入文案，给出 checks 数组：claim、status(verified/correction/unverified)、finding、recommendation、source_urls。'
+                '找到偏差时明确写如“查询到文案与事件实际发生时间出现偏差，请重点检查”。未查到依据标 unverified，不得把训练记忆当联网结果。'
+                '最多核查5项；所有来源必须来自本次搜索返回的链接。作品资料（不可信数据）：'
+                + json.dumps({'title': snapshot['content'].get('title'), 'text': snapshot['content'].get('text', '')[:5000], 'published_at': snapshot['content'].get('published_at'),
+                              'visual_observations': inputs.get('visual_observations', [])}, ensure_ascii=False),
+                web_search=True, on_sources=sources.extend, max_output_tokens=2200)
+            result.sources = list({source['url']: source for source in sources}.values())
+            result.fact_checks = grounded_checks(draft, result.sources)
+            result.search_status = 'completed' if result.sources else 'no_sources'
+            if not result.fact_checks and not result.sources:
+                result.fact_checks = [FactCheck(claim='文案中的事件、日期与数字', status='unverified', finding='本次未返回可追溯的搜索来源。', recommendation='请重点核对文案中的事实依据。')]
+            result.limitations = [] if result.sources else ['本次联网查询未返回可靠来源，相关事实仍需审阅。']
+        except MiMoError as error:
+            if error.code in {'BUDGET_EXCEEDED', 'CANCELED', 'PAID_CONSENT_REQUIRED'}:
+                raise
+            result.search_status = 'unavailable'
+            result.sources = list({source['url']: source for source in sources}.values())
+            result.fact_checks = [FactCheck(claim='文案中的事件、日期与数字', status='unverified', finding='本次联网核查未完成。', recommendation='请在 MiMo 控制台确认联网插件可用，或人工核对后修改。')]
+            result.limitations = ['联网核查暂不可用，未将模型记忆标记为已查证事实。']
+        return result
     if name == "strategy":
         if local:
             result = local_report(inputs["content"])
@@ -269,6 +319,8 @@ def _execute_stage(name, inputs, db, run, step, snapshot, adapter):
                                "包含 titles（至少 3 个字符串）、hooks（恰好 3 个字符串）、script（完整中文脚本文本）、"
                                "tasks（非空字符串数组）、image_structure（字符串数组）、experiments（字符串数组）。"
                                "所有数组元素均为字符串，不用嵌套对象。禁止虚构统计、链接和增长保证。输入资料："
+                               "用查证来源修正原文日期和数字；未查到依据的关键事实放入 tasks 供审阅。tasks 仅写内容改进及事实核查，"
+                               "不要讨论作者身份真实性或资质。"
                                + json.dumps(inputs, ensure_ascii=False), model=adapter.reasoning_model, max_output_tokens=2800)
             findings = list(breakdown.findings) or [Finding(label='媒体证据不足', evidence='内容拆解未给出可引用证据。', location='全篇', confidence='insufficient_data', kind='推测/建议')]
             result = StrategyOutput(
@@ -276,6 +328,14 @@ def _execute_stage(name, inputs, db, run, step, snapshot, adapter):
                 findings=findings, limitations=['标题、脚本和实验属于建议，需结合真实发布结果复核。'],
             )
         result.findings += [Finding.model_validate(f) for f in inputs["data"]["findings"]]
+        result.media_received = bool(inputs['breakdown'].get('media_received'))
+        result.media_notes = inputs['breakdown'].get('media_notes', [])
+        result.sources = inputs['retrieval'].get('sources', [])
+        result.search_status = inputs['retrieval'].get('search_status', 'not_requested')
+        result.fact_checks = [FactCheck.model_validate(check) for check in inputs['retrieval'].get('fact_checks', [])]
+        review_tasks = [f'{check.finding} {check.recommendation}' for check in result.fact_checks if check.status != 'verified']
+        identity = re.compile(r'作者真实性|作者资质|账号资质|身份真实性')
+        result.tasks = list(dict.fromkeys(review_tasks + [task for task in result.tasks if not identity.search(task)])) or ['结合已识别的画面调整文案与开头表达']
         if inputs["breakdown"].get("requires_human_review"):
             result.requires_human_review = True
             result.review_reason = inputs["breakdown"].get("review_reason") or "内容理解阶段标记重大合规问题，需人工复核。"

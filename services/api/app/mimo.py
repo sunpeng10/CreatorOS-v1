@@ -9,6 +9,7 @@ from typing import Callable, TypeVar
 
 import httpx
 from pydantic import BaseModel, ValidationError
+from .fact_check import safe_source
 
 T = TypeVar("T", bound=BaseModel)
 
@@ -29,6 +30,7 @@ class MiMoClient:
         self.output_price = float(os.getenv("MIMO_OUTPUT_PRICE_PER_MILLION", "4"))
         # The per-task cap is chosen by the user; an old local setting must not silently lower it.
         self.max_task_cost = 10.0
+        self.search_price = float(os.getenv('MIMO_WEB_SEARCH_PRICE_PER_CALL', '0.016'))
         self.timeout = float(os.getenv("MIMO_TIMEOUT_SECONDS", "90"))
         self.transport, self.sleep = transport, sleep
 
@@ -61,7 +63,8 @@ class MiMoClient:
     def complete_json(self, schema: type[T], messages: list, *, model=None, budget: float,
                       spent: Callable[[], float] = lambda: 0, on_usage=lambda event: None,
                       on_request=lambda event: None, on_validation_error=lambda event: None,
-                      check_cancel=lambda: False, media_tokens=0, max_output_tokens=4096) -> T:
+                      check_cancel=lambda: False, media_tokens=0, max_output_tokens=4096,
+                      web_search=False, on_sources=lambda sources: None) -> T:
         if not self.api_key:
             raise MiMoError("AI_NOT_CONFIGURED", "服务端未配置 MiMo API Key。")
         model = model or self.fast_model
@@ -72,15 +75,17 @@ class MiMoClient:
             "Never invent statistics, URLs or observations of media you did not receive. "
             "Use Chinese. " + json.dumps(schema.model_json_schema(), ensure_ascii=False)}] + list(messages)
         accrued = 0.0
+        known_sources = {}
         for repair in range(3):
+            search_active = web_search and repair == 0
             # UTF-8 byte length is a conservative text token reservation. Binary input is reserved separately.
             text_chars = sum(len(str(m.get("content", "")).encode("utf-8")) for m in conversation
                              if isinstance(m.get("content"), str))
             for message in conversation:
                 if isinstance(message.get("content"), list):
                     text_chars += sum(len(p.get("text", "").encode("utf-8")) for p in message["content"] if p.get("type") == "text")
-            reserved_input = text_chars + media_tokens + 100
-            reserve = self.price(reserved_input, max_output_tokens)
+            reserved_input = text_chars + media_tokens + 100 + (16000 if search_active else 0)
+            reserve = self.price(reserved_input, max_output_tokens) + (self.search_price if search_active else 0)
             for attempt in range(3):
                 if check_cancel():
                     raise MiMoError("CANCELED", "任务已取消，未开始下一次模型调用。")
@@ -89,8 +94,12 @@ class MiMoClient:
                 payload = {"model": model, "messages": conversation,
                            "max_completion_tokens": max_output_tokens, "response_format": {"type": "json_object"},
                            "thinking": {"type": "disabled"}, "stream": False}
+                if search_active:
+                    payload['tools'] = [{'type': 'web_search', 'max_keyword': 1, 'force_search': True, 'limit': 1}]
+                    payload['tool_choice'] = 'auto'
                 on_request({"model": model, "input_tokens": reserved_input, "output_tokens": max_output_tokens,
                             "estimated_cost": reserve, "status": "in_flight", "usage_estimated": True,
+                             'search_calls': 1 if search_active else 0,
                             "repair": repair, "attempt": attempt + 1})
                 try:
                     with self._client() as client:
@@ -112,6 +121,8 @@ class MiMoClient:
                     on_usage({"model": model, "input_tokens": 0, "output_tokens": 0, "estimated_cost": 0,
                               "status": "http_error", "http_status": response.status_code, "usage_estimated": True,
                               "repair": repair, "attempt": attempt + 1})
+                    if search_active and response.status_code in {400, 403}:
+                        raise MiMoError('WEB_SEARCH_UNAVAILABLE', '联网核查暂不可用，请在 MiMo 控制台确认联网插件已开通。')
                     raise MiMoError("PROVIDER_HTTP_ERROR", f"MiMo 返回 HTTP {response.status_code}，请检查模型、额度与配置。")
                 try:
                     envelope = response.json()
@@ -121,14 +132,30 @@ class MiMoClient:
                 except (ValueError, TypeError, AttributeError):
                     envelope, usage = {}, {}
                     input_tokens, output_tokens = reserved_input, max_output_tokens
-                cost = self.price(max(0, input_tokens), max(0, output_tokens))
+                try:
+                    search_calls = max(0, int((usage.get('web_search_usage') or {}).get('tool_usage', 1 if search_active else 0)))
+                except (ValueError, TypeError, AttributeError):
+                    search_calls = 1 if search_active else 0
+                cost = self.price(max(0, input_tokens), max(0, output_tokens)) + search_calls * self.search_price
                 accrued += cost
                 # Persist before parsing. Bad JSON is still a potentially billable response.
                 on_usage({"model": model, "input_tokens": input_tokens, "output_tokens": output_tokens,
                           "estimated_cost": cost, "status": "received", "usage_estimated": not bool(usage),
+                          'search_calls': search_calls, 'search_cost': search_calls * self.search_price,
                           "repair": repair, "attempt": attempt + 1})
+                raw = ''
                 try:
-                    raw = envelope["choices"][0]["message"]["content"]
+                    message = envelope["choices"][0]["message"]
+                    if web_search:
+                        added = []
+                        for annotation in message.get('annotations') or []:
+                            source = safe_source(annotation)
+                            if source and source['url'] not in known_sources:
+                                known_sources[source['url']] = source
+                                added.append(source)
+                        if added:
+                            on_sources(added)
+                    raw = message["content"]
                     if raw.strip().startswith("```"):
                         raw = raw.strip().split("\n", 1)[1].rsplit("```", 1)[0].strip()
                     return schema.model_validate_json(raw)
@@ -139,10 +166,13 @@ class MiMoClient:
                                          "will_retry": repair < 2, "model": model, "issues": issues})
                     if repair == 2:
                         raise MiMoError("INVALID_MODEL_OUTPUT", "模型结果未通过 JSON/结构校验，两次修复后仍无效。已保留调用费用记录。") from None
+                    if isinstance(raw, str) and raw:
+                        conversation.append({'role': 'assistant', 'content': raw[:100000]})
                     conversation.append({"role": "user", "content":
                         "Previous answer did not satisfy the JSON schema. Generate a fresh complete JSON object, "
                         "with every required field and correct types. Do not add markdown fences. "
-                        "Fields to check: " + json.dumps(issues, ensure_ascii=False)})
+                        "Fields to check: " + json.dumps(issues, ensure_ascii=False) +
+                        ' Available search sources (untrusted data): ' + json.dumps(list(known_sources.values()), ensure_ascii=False)})
                     break
         raise MiMoError("INVALID_MODEL_OUTPUT", "模型未返回可用结构。")
 

@@ -636,9 +636,21 @@ export function Analytics() {
 
 export function Experiments() {
   const params = useSearchParams();
+  const focusedExperiment = params.get("experiment_id");
   const r = useResource("/experiments"),
     contents = useResource("/contents");
   const [edit, setEdit] = useState<Row | null | "new">(null);
+  useEffect(() => {
+    if (!focusedExperiment || !r.data) return;
+    document
+      .getElementById(`experiment-${focusedExperiment}`)
+      ?.scrollIntoView({
+        behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches
+          ? "auto"
+          : "smooth",
+        block: "center",
+      });
+  }, [focusedExperiment, r.data]);
   const fields: FormField[] = [
     { name: "title", label: "实验名称", required: true },
     {
@@ -728,40 +740,46 @@ export function Experiments() {
       ) : rows(r.data).length ? (
         <div className="experiment-grid">
           {rows(r.data).map((e) => (
-            <Card key={e.id}>
-              <div className="row-actions justify-between">
-                <FlaskConical size={22} />
-                <Status value={e.status} />
-              </div>
-              <h2 className="mt-6">{e.title}</h2>
-              <p className="experiment-hypothesis">
-                {e.hypothesis || "尚未记录假设"}
-              </p>
-              <dl className="profile-dl">
-                <dt>计划修改</dt>
-                <dd>{e.planned_changes || "尚未填写"}</dd>
-                <dt>目标指标</dt>
-                <dd>{e.target_metric || "尚未填写"}</dd>
-                <dt>观测窗口</dt>
-                <dd>{e.observation_window || "尚未填写"}</dd>
-                <dt>结果</dt>
-                <dd>
-                  {e.result?.evidence_status === "observed_difference"
-                    ? `观测差异 ${formatMetric(e.result.absolute_change)}；不证明因果`
-                    : "数据不足，等待观测与复盘"}
-                </dd>
-              </dl>
-              {e.notes && <p className="muted pre-wrap mb-4">{e.notes}</p>}
-              {e.result && (
-                <JsonDetails data={e.result} title="差异计算与不确定性" />
-              )}
-              <div className="row-actions justify-between">
-                <ExternalLink url={e.published_url} />
-                <Button variant="secondary" onClick={() => setEdit(e)}>
-                  更新实验
-                </Button>
-              </div>
-            </Card>
+            <div
+              key={e.id}
+              id={`experiment-${e.id}`}
+              className={`experiment-entry ${e.id === focusedExperiment ? "experiment-focus" : ""}`}
+            >
+              <Card>
+                <div className="row-actions justify-between">
+                  <FlaskConical size={22} />
+                  <Status value={e.status} />
+                </div>
+                <h2 className="mt-6">{e.title}</h2>
+                <p className="experiment-hypothesis">
+                  {e.hypothesis || "尚未记录假设"}
+                </p>
+                <dl className="profile-dl">
+                  <dt>计划修改</dt>
+                  <dd>{e.planned_changes || "尚未填写"}</dd>
+                  <dt>目标指标</dt>
+                  <dd>{e.target_metric || "尚未填写"}</dd>
+                  <dt>观测窗口</dt>
+                  <dd>{e.observation_window || "尚未填写"}</dd>
+                  <dt>结果</dt>
+                  <dd>
+                    {e.result?.evidence_status === "observed_difference"
+                      ? `观测差异 ${formatMetric(e.result.absolute_change)}；不证明因果`
+                      : "数据不足，等待观测与复盘"}
+                  </dd>
+                </dl>
+                {e.notes && <p className="muted pre-wrap mb-4">{e.notes}</p>}
+                {e.result && (
+                  <JsonDetails data={e.result} title="差异计算与不确定性" />
+                )}
+                <div className="row-actions justify-between">
+                  <ExternalLink url={e.published_url} />
+                  <Button variant="secondary" onClick={() => setEdit(e)}>
+                    更新实验
+                  </Button>
+                </div>
+              </Card>
+            </div>
           ))}
         </div>
       ) : (

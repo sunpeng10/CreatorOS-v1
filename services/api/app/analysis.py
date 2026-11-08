@@ -5,18 +5,20 @@ import json
 import threading
 import time
 from typing import Literal
+from uuid import NAMESPACE_URL, uuid5
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from fastapi.responses import Response
 from pydantic import BaseModel, Field
 from sqlalchemy import func, select, update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 
 from .auth import current_user, owned
 from .db import get_db
 from .mimo import MiMoClient
 from .models import (AgentRun, AgentStep, AuditLog, ContentAnalysis, ContentItem,
-                     ContentVersion, CostEvent, Delivery, User, serialize, stamp)
+                     ContentVersion, CostEvent, Delivery, Experiment, User, serialize, stamp)
 from .workflow import STAGES, cache_key, create_run, execute_run, take_snapshot
 
 router = APIRouter(prefix="/api", tags=["分析与任务"])
@@ -33,6 +35,11 @@ class AnalysisRequest(BaseModel):
 class StartRequest(BaseModel):
     confirm_paid: bool = False
     budget: float = Field(default=1, gt=0, le=10)
+    allow_web_search: bool = False
+
+
+class RecommendationRequest(BaseModel):
+    task_index: int = Field(ge=0)
 
 
 class RetryRequest(BaseModel):
@@ -113,7 +120,8 @@ def create_analysis(body: AnalysisRequest, background: BackgroundTasks, db: Sess
                                                    ContentAnalysis.cache_key == key, ContentAnalysis.status == "SUCCEEDED",
                                                    ContentAnalysis.data['deleted_at'].as_string().is_(None))
                       .order_by(ContentAnalysis.created_at.desc()))
-    if prior:
+    # A plugin failure must be retryable after the owner enables search, while keeping old reports intact.
+    if prior and (body.mode != 'ai' or (prior.report or {}).get('search_status') == 'completed'):
         return {**_detail(db, prior), "cached": True}
     analysis = ContentAnalysis(organization_id=user.organization_id, content_id=content.id, mode=body.mode,
                                status="QUEUED", cache_key=key, report={}, data={"created_by": user.id})
@@ -143,7 +151,7 @@ def start_analysis(analysis_id: str, body: StartRequest, background: BackgroundT
         content = owned(db, ContentItem, analysis.content_id, user)
         snapshot = take_snapshot(db, content, analysis.mode)
         run = create_run(db, analysis, snapshot, body.budget if analysis.mode == "ai" else 0,
-                         body.confirm_paid and analysis.mode == "ai")
+                         body.confirm_paid and analysis.mode == "ai", web_search_consent=body.allow_web_search and analysis.mode == 'ai')
         _schedule(background, db, run)
         return _detail(db, analysis)
 
@@ -163,6 +171,43 @@ def analyses(limit: int = Query(30, ge=1, le=100), offset: int = Query(0, ge=0),
 @router.get("/analyses/{analysis_id}")
 def analysis_detail(analysis_id: str, db: Session = Depends(get_db), user: User = Depends(current_user)):
     return _detail(db, _visible_analysis(db, analysis_id, user))
+
+
+@router.post('/analyses/{analysis_id}/experiments')
+def experiment_from_recommendation(analysis_id: str, body: RecommendationRequest, db: Session = Depends(get_db), user: User = Depends(current_user)):
+    analysis = _visible_analysis(db, analysis_id, user)
+    if analysis.status != 'SUCCEEDED':
+        _error('REPORT_NOT_READY', '分析完成后才能创建关联实验。', 409)
+    tasks = (analysis.report or {}).get('tasks', [])
+    if body.task_index >= len(tasks) or not isinstance(tasks[body.task_index], str):
+        _error('INVALID_RECOMMENDATION', '请选择报告中的有效修改建议。', 422)
+    task = tasks[body.task_index].strip()
+    if not task:
+        _error('INVALID_RECOMMENDATION', '该建议为空，请选择其他建议。', 422)
+    content = owned(db, ContentItem, analysis.content_id, user)
+    identifier = str(uuid5(NAMESPACE_URL, f'creatoros:experiment:{analysis.id}:{body.task_index}:{task}'))
+    prior = db.get(Experiment, identifier)
+    if prior:
+        return serialize(prior)
+    metric = next((name for term, name in [('评论', 'comments'), ('点赞', 'likes'), ('转发', 'shares'), ('分享', 'shares'), ('收藏', 'favorites'), ('粉丝', 'followers')] if term in task), 'views')
+    from .business_research import experiment_data
+    fields = experiment_data({'hypothesis': f'聚焦本次修改：{task}；在一致观测窗口比较作品表现。', 'planned_changes': task,
+                              'target_metric': metric, 'observation_window': '发布后 7 天'}, db, user)
+    latest_version = db.scalar(select(ContentVersion).where(ContentVersion.organization_id == user.organization_id, ContentVersion.content_id == content.id).order_by(ContentVersion.version.desc()))
+    fields.update({'recommendation_index': body.task_index, 'source_task': task,
+                   'content_snapshot': {'title': content.title, 'text': content.text, 'version': serialize(latest_version) if latest_version else None, 'captured_at': stamp()}})
+    experiment = Experiment(id=identifier, organization_id=user.organization_id, analysis_id=analysis.id, content_id=content.id,
+                            title=f'{content.title[:220]} · 修改实验 {body.task_index + 1}', status='PLANNED', data=fields)
+    try:
+        db.add(experiment); db.flush()
+        db.add(AuditLog(organization_id=user.organization_id, actor_id=user.id, action='experiment.from_recommendation', target_id=experiment.id))
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        experiment = db.get(Experiment, identifier)
+        if not experiment:
+            raise
+    return serialize(experiment)
 
 
 @router.patch('/analyses/{analysis_id}')
