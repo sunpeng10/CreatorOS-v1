@@ -28,8 +28,10 @@ from .business_common import audit, extras, fail, listing, required, rows, save,
 
 router = APIRouter(tags=["research"])
 AVATAR_DIR = DATA_DIR / 'account-avatars'
+LIBRARY_COVER_DIR = DATA_DIR / 'library-covers'
 METRICS = ("views", "likes", "comments", "shares", "favorites", "impressions", "followers")
 ALIASES = {"标题": "title", "作品标题": "title", "播放量": "views", "阅读量": "views", "点赞": "likes", "点赞数": "likes", "评论": "comments", "转发": "shares", "收藏": "favorites", "曝光量": "impressions", "粉丝数": "followers", "观测日期": "observed_at", "日期": "observed_at", "分类": "category", "平台": "platform", "作者": "author", "链接": "url"}
+ALIASES.update({"cover_image": "cover_path", "照片": "cover_path", "图片": "cover_path", "封面": "cover_path", "封面图": "cover_path", "封面路径": "cover_path", "封面链接": "cover_url"})
 
 
 def account_details(body, account=None):
@@ -127,7 +129,9 @@ def canonical_url(value):
 def normalized_benchmark(body, demo=False):
     demo = demo or str(body.get("is_demo", "")).lower() in {"true", "1", "yes"}
     values = {"title": required(body, "title", 500), "platform": str(body.get("platform") or "未指定")[:80], "url": canonical_url(body.get("url")), "author": str(body.get("author") or "")[:200], "category": str(body.get("category") or "未分类")[:100], "is_demo": bool(demo)}
-    extra = extras(body, ["tags", "audience", "structure", "text", "source", "collected_at", "published_at", "notes"])
+    extra = extras(body, ["tags", "audience", "structure", "text", "source", "collected_at", "published_at", "notes", "cover_url"])
+    if "cover_url" in extra:
+        extra["cover_url"] = canonical_url(extra["cover_url"])
     metric_source = body.get("metrics") if isinstance(body.get("metrics"), dict) else body
     validated, errors = validate_metric_rows([{"title": values["title"], **{key: metric_source.get(key) for key in METRICS}}], {})
     if errors:
@@ -167,7 +171,7 @@ def add_library(body: dict = Body(...), db: Session = Depends(get_db), user: Use
     return {**serialize(item), "duplicate": not created}
 
 
-async def read_table(file):
+async def read_table(file, max_rows=5000):
     raw = await file.read(5 * 1024 * 1024 + 1)
     if len(raw) > 5 * 1024 * 1024:
         fail("导入文件不能超过 5 MB", 413)
@@ -189,8 +193,8 @@ async def read_table(file):
                     fail("Excel 解压后体积超过限制", 413)
             book = load_workbook(io.BytesIO(raw), read_only=True, data_only=True)
             sheet = book.active
-            if sheet.max_row > 5001 or sheet.max_column > 100:
-                book.close(); fail("导入最多支持 5000 行、100 列")
+            if sheet.max_column > 100 or (max_rows is not None and sheet.max_row > max_rows + 1):
+                book.close(); fail(f"导入最多支持 {max_rows} 行、100 列" if max_rows is not None else "导入最多支持 100 列")
             iterator = sheet.iter_rows(values_only=True)
             headers = [str(x or "").strip() for x in next(iterator, [])]
             table = [dict(zip(headers, line)) for line in iterator]
@@ -201,28 +205,95 @@ async def read_table(file):
         fail("无法解析导入文件，请检查编码与格式")
     if not headers or len(headers) > 100 or len(set(headers)) != len(headers):
         fail("表头不能为空或重复，且最多 100 列")
-    if len(table) > 5000:
-        fail("导入最多支持 5000 行")
+    if max_rows is not None and len(table) > max_rows:
+        fail(f"导入最多支持 {max_rows} 行")
     if not table:
         fail("文件只有表头或为空，请至少提供一行数据")
     return table, headers, name, hashlib.sha256(raw).hexdigest()
 
 
+def library_cover_path(item):
+    version = (item.data or {}).get("cover_version", "")
+    if isinstance(version, str) and re.fullmatch(r"[a-f0-9]{32}", version):
+        return LIBRARY_COVER_DIR / f"{item.id}-{version}.png"
+    return None
+
+
+async def read_library_cover(file):
+    raw = await file.read(5 * 1024 * 1024 + 1)
+    if len(raw) > 5 * 1024 * 1024:
+        fail("单张封面最多 5 MB", 413)
+    try:
+        with Image.open(io.BytesIO(raw)) as image:
+            if image.format not in {"JPEG", "PNG", "WEBP"} or image.width * image.height > 16000000:
+                fail("封面仅支持 JPG、PNG、WebP，最多 1600 万像素")
+            cover = ImageOps.exif_transpose(image).convert("RGBA")
+            cover.thumbnail((1600, 1600))
+            output = io.BytesIO()
+            cover.save(output, format="PNG")
+            return output.getvalue()
+    except (UnidentifiedImageError, OSError, ValueError, Image.DecompressionBombError):
+        fail("封面文件损坏或格式无效")
+
+
 @router.post("/library/import")
-async def import_library(file: UploadFile = File(...), db: Session = Depends(get_db), user: User = Depends(current_user)):
-    table, _, name, digest = await read_table(file)
+async def import_library(file: UploadFile = File(...), covers: list[UploadFile] = File(default=[]), db: Session = Depends(get_db), user: User = Depends(current_user)):
+    table, _, name, digest = await read_table(file, max_rows=None)
     values = []
     for index, row in enumerate(table, 2):
-        mapped = {ALIASES.get(key, key): value for key, value in row.items()}
+        mapped = {ALIASES.get(str(key).strip(), str(key).strip()): value for key, value in row.items() if key is not None}
+        cover_reference = str(mapped.pop("cover_path", "") or "").strip()
+        if cover_reference.lower().startswith(("https://", "http://")):
+            mapped["cover_url"] = cover_reference
+            cover_reference = ""
+        cover_name = cover_reference.replace("\\", "/").rsplit("/", 1)[-1].casefold()
         mapped["source"] = f"用户授权导入：{name} 第 {index} 行"
-        values.append(normalized_benchmark(mapped))
-    imported, duplicates = 0, 0
-    for value in values:
-        value["data"]["file_sha256"] = digest
-        _, created = insert_benchmark(db, user, value)
-        imported += int(created); duplicates += int(not created)
-    db.commit()
-    return {"imported": imported, "duplicates": duplicates, "source": name}
+        value = normalized_benchmark(mapped)
+        value["data"].update(file_sha256=digest, original_filename=name, source_row=index)
+        values.append((value, cover_name))
+    uploads = {}
+    for cover in covers:
+        key = (cover.filename or "").replace("\\", "/").rsplit("/", 1)[-1].casefold()
+        if not key:
+            continue
+        if key in uploads:
+            fail(f"封面图片重名，请使用唯一文件名：{cover.filename}")
+        uploads[key] = cover
+    matched = {}
+    for key in {key for _, key in values if key}:
+        if key in uploads:
+            matched[key] = await read_library_cover(uploads[key])
+    imported, duplicates, covers_imported = 0, 0, 0
+    new_paths, old_paths = set(), set()
+    try:
+        for value, cover_name in values:
+            item, created = insert_benchmark(db, user, value)
+            imported += int(created); duplicates += int(not created)
+            if cover_name in matched:
+                previous = library_cover_path(item)
+                version = uuid4().hex
+                LIBRARY_COVER_DIR.mkdir(parents=True, exist_ok=True)
+                target = LIBRARY_COVER_DIR / f"{item.id}-{version}.png"
+                new_paths.add(target)
+                target.write_bytes(matched[cover_name])
+                update_data(item, {"cover_version": version, "cover_filename": uploads[cover_name].filename})
+                if previous:
+                    old_paths.add(previous)
+                covers_imported += 1
+            elif not created and value["data"].get("cover_url"):
+                previous = library_cover_path(item)
+                update_data(item, {"cover_url": value["data"]["cover_url"], "cover_version": None})
+                if previous:
+                    old_paths.add(previous)
+        db.commit()
+    except Exception:
+        db.rollback()
+        for target in new_paths:
+            target.unlink(missing_ok=True)
+        raise
+    for target in old_paths:
+        target.unlink(missing_ok=True)
+    return {"imported": imported, "duplicates": duplicates, "source": name, "covers_imported": covers_imported, "missing_covers": sum(bool(key) and key not in matched for _, key in values)}
 
 
 @router.post("/library/demo")
@@ -247,13 +318,25 @@ def get_library(item_id: str, db: Session = Depends(get_db), user: User = Depend
     return serialize(owned(db, BenchmarkItem, item_id, user))
 
 
+@router.get("/library/{item_id}/cover")
+def get_library_cover(item_id: str, db: Session = Depends(get_db), user: User = Depends(current_user)):
+    item = owned(db, BenchmarkItem, item_id, user)
+    target = library_cover_path(item)
+    if not target or not target.is_file():
+        fail("尚未上传封面", 404)
+    return FileResponse(target, media_type="image/png", headers={"Cache-Control": "private, max-age=3600", "X-Content-Type-Options": "nosniff"})
+
+
 @router.delete("/library/{item_id}")
 def delete_library(item_id: str, db: Session = Depends(get_db), user: User = Depends(current_user)):
     item = owned(db, BenchmarkItem, item_id, user)
+    cover = library_cover_path(item)
     for recommendation in db.scalars(select(Recommendation).where(Recommendation.organization_id == user.organization_id, Recommendation.benchmark_id == item.id)):
         db.delete(recommendation)
     audit(db, user, "library.deleted", item.id)
     db.delete(item); db.commit()
+    if cover:
+        cover.unlink(missing_ok=True)
     return {"deleted": True}
 
 
@@ -431,6 +514,20 @@ async def import_metrics(file: UploadFile = File(...), mapping: str = Form(""), 
     return {"imported": imported, "duplicates": duplicates, "snapshot_ids": ids, "source": name, "errors": []}
 
 
+@router.delete("/metrics/imports/{file_sha256}")
+def delete_metric_import(file_sha256: str, db: Session = Depends(get_db), user: User = Depends(current_user)):
+    if not re.fullmatch(r"[a-f0-9]{64}", file_sha256):
+        fail("导入文件标识无效")
+    snapshots = [item for item in rows(db, MetricSnapshot, user) if (item.data or {}).get("file_sha256") == file_sha256]
+    if not snapshots:
+        fail("未找到该文件的指标记录", 404)
+    for snapshot in snapshots:
+        db.delete(snapshot)
+    audit(db, user, "metrics.import_deleted", file_sha256, {"deleted": len(snapshots)})
+    db.commit()
+    return {"deleted": len(snapshots)}
+
+
 def snapshot_view(snapshot, content, denominator):
     metrics = {key: (snapshot.data or {}).get("metrics", {}).get(key) for key in METRICS}
     numerator_values = [metrics[key] for key in ["likes", "comments", "shares", "favorites"]]
@@ -447,6 +544,13 @@ def analytics(denominator: str = "views", account_id: str = "", db: Session = De
         owned(db, CreatorAccount, account_id, user)
     contents = {item.id: item for item in rows(db, ContentItem, user)}
     snapshots = [item for item in rows(db, MetricSnapshot, user) if not account_id or item.account_id == account_id]
+    imports = {}
+    for snapshot in snapshots:
+        details = snapshot.data or {}
+        digest = details.get("file_sha256")
+        if digest:
+            group = imports.setdefault(digest, {"file_sha256": digest, "name": details.get("original_filename") or snapshot.source, "snapshots": 0})
+            group["snapshots"] += 1
     all_items = [snapshot_view(item, contents.get(item.content_id), denominator) for item in sorted(snapshots, key=lambda x: (x.observed_at, x.created_at, x.id))]
     latest = {}
     for item in all_items:
@@ -459,7 +563,7 @@ def analytics(denominator: str = "views", account_id: str = "", db: Session = De
     for category, group in sorted(categories.items()):
         values = [item["views"] for item in group if item["views"] is not None]
         comparisons.append({"category": category, "count": len(group), "views_sample_size": len(values), "median_views": median(values) if values else None, "total_views": sum(values) if values else None})
-    return {"items": items, "total": len(items), "trends": all_items, "rankings": sorted(items, key=lambda x: (x["views"] is None, -(x["views"] or 0), x["content_id"])), "category_comparison": comparisons, "denominator": denominator, "engagement_formula": f"(likes + comments + shares + favorites) / {denominator}；任一必要项缺失或分母为 0 时结果为 null", "source": "用户导入的指标快照；排行使用每个作品最新快照", "date_range": {"from": all_items[0]["observed_at"] if all_items else None, "to": all_items[-1]["observed_at"] if all_items else None}, "limitations": ["快照可能是累计值，趋势不可直接解释为新增量。", "缺失指标不补零，样本不一致的类别不可直接推断优劣。", "缺少对照和一致观测窗口时，增长不能证明某条建议的因果效果。"]}
+    return {"items": items, "total": len(items), "imports": list(imports.values()), "trends": all_items, "rankings": sorted(items, key=lambda x: (x["views"] is None, -(x["views"] or 0), x["content_id"])), "category_comparison": comparisons, "denominator": denominator, "engagement_formula": f"(likes + comments + shares + favorites) / {denominator}；任一必要项缺失或分母为 0 时结果为 null", "source": "用户导入的指标快照；排行使用每个作品最新快照", "date_range": {"from": all_items[0]["observed_at"] if all_items else None, "to": all_items[-1]["observed_at"] if all_items else None}, "limitations": ["快照可能是累计值，趋势不可直接解释为新增量。", "缺失指标不补零，样本不一致的类别不可直接推断优劣。", "缺少对照和一致观测窗口时，增长不能证明某条建议的因果效果。"]}
 
 
 def experiment_data(body, db, user, existing=None):

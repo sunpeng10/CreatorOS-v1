@@ -336,6 +336,33 @@ def test_metrics_preview_import_dedupe_and_null(business_client):
     assert http.get("/api/analytics/overview?denominator=invalid").status_code == 422
 
 
+def test_metrics_delete_import_refreshes_analytics_and_preserves_other_data(business_client):
+    from app.models import ContentItem
+    from sqlalchemy import select
+    http, factory, active, admin, client = business_client
+    original = "title,views,observed_at\n作品甲,100,2026-11-01\n作品乙,200,2026-11-01\n".encode("utf-8-sig")
+    latest = "title,views,observed_at\n作品甲,300,2026-11-02\n".encode("utf-8-sig")
+    for name, raw in [("原始.csv", original), ("最新.csv", latest)]:
+        assert http.post("/api/metrics/import", files={"file": (name, raw, "text/csv")}).status_code == 200
+    overview = http.get("/api/analytics/overview").json()
+    groups = {group["name"]: group for group in overview["imports"]}
+    assert groups["原始.csv"]["snapshots"] == 2
+    assert groups["最新.csv"]["snapshots"] == 1
+    latest_path = "/api/metrics/imports/" + groups["最新.csv"]["file_sha256"]
+    active["user"] = client
+    assert http.delete(latest_path).status_code == 404
+    active["user"] = admin
+    assert http.delete(latest_path).json()["deleted"] == 1
+    overview = http.get("/api/analytics/overview").json()
+    assert len(overview["trends"]) == 2 and len(overview["imports"]) == 1
+    assert {item["title"]: item["views"] for item in overview["items"]} == {"作品甲": 100, "作品乙": 200}
+    assert http.delete("/api/metrics/imports/" + groups["原始.csv"]["file_sha256"]).json()["deleted"] == 2
+    overview = http.get("/api/analytics/overview").json()
+    assert overview["items"] == overview["trends"] == overview["imports"] == []
+    with factory() as db:
+        assert len(list(db.scalars(select(ContentItem)))) == 2
+
+
 def test_order_requires_approval_customer_confirmation_and_successful_analysis(business_client):
     http, factory, active, admin, customer = business_client
     from app.models import ContentItem, ContentAnalysis
@@ -583,3 +610,80 @@ def test_agent_snapshot_redacts_credentials_without_losing_usage():
     assert "DEMOSECRET" not in safe["output"]
     assert safe["steps"][0]["mimo_api_key"] == "[REDACTED]"
     assert safe["input_tokens"] == 33
+
+
+def test_library_reads_all_four_platforms_from_a_200_row_import(business_client):
+    import csv
+    from collections import Counter
+    http, _, _, _, _ = business_client
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow(["title", "platform", "author", "category", "likes", "collected_at"])
+    platforms = ["小红书", "抖音", "B站", "视频号"]
+    for platform in platforms:
+        for index in range(50):
+            writer.writerow([f"{platform}作品{index}", platform, "作者", "数码科技", index, "2026-10-22"])
+    response = http.post("/api/library/import", files={"file": ("200条作品.csv", output.getvalue().encode("utf-8-sig"), "text/csv")})
+    assert response.status_code == 200, response.text
+    assert response.json()["imported"] == 200
+    assert response.json()["missing_covers"] == 0
+    page = http.get("/api/library?limit=500").json()
+    assert len(page["items"]) == page["total"] == 200
+    assert Counter(item["platform"] for item in page["items"]) == dict.fromkeys(platforms, 50)
+    assert all(item["metrics"]["views"] is None for item in page["items"])
+    assert all(item["original_filename"] == "200条作品.csv" for item in page["items"])
+
+
+def test_library_table_has_no_total_row_cap():
+    import asyncio
+    from fastapi import UploadFile
+    from app.business_research import read_table
+    raw = ("title,platform\n" + "作品,B站\n" * 5001).encode("utf-8")
+    table, _, _, _ = asyncio.run(read_table(UploadFile(file=io.BytesIO(raw), filename="many.csv"), max_rows=None))
+    assert len(table) == 5001
+
+
+@pytest.mark.parametrize("image_format,extension,column", [("JPEG", "jpg", "照片"), ("PNG", "png", "cover_image"), ("WEBP", "webp", "cover_path")])
+def test_library_local_cover_matches_path_and_updates_duplicate_without_losing_data(business_client, tmp_path, monkeypatch, image_format, extension, column):
+    from PIL import Image
+    import app.business_research as research
+    monkeypatch.setattr(research, "LIBRARY_COVER_DIR", tmp_path)
+    http, _, active, admin, client = business_client
+    raw = f"title,platform,{column},likes\n本机封面,B站,C:\\covers\\photo.{extension},0\n".encode("utf-8-sig")
+    first = http.post("/api/library/import", files={"file": ("covers.csv", raw, "text/csv")})
+    assert first.status_code == 200, first.text
+    assert first.json()["missing_covers"] == 1
+    image = io.BytesIO()
+    Image.new("RGB", (40, 30), "green").save(image, format=image_format)
+    second = http.post("/api/library/import", files=[
+        ("file", ("covers.csv", raw, "text/csv")),
+        ("covers", (f"photo.{extension}", image.getvalue(), f"image/{image_format.lower()}")),
+    ])
+    assert second.status_code == 200, second.text
+    assert second.json()["imported"] == 0 and second.json()["duplicates"] == 1
+    assert second.json()["covers_imported"] == 1 and second.json()["missing_covers"] == 0
+    item = http.get("/api/library").json()["items"][0]
+    assert item["metrics"]["likes"] == 0 and item["metrics"]["views"] is None
+    path = f'/api/library/{item["id"]}/cover'
+    cover = http.get(path)
+    assert cover.status_code == 200 and cover.headers["content-type"] == "image/png"
+    assert Image.open(io.BytesIO(cover.content)).size == (40, 30)
+    active["user"] = client
+    assert http.get(path).status_code == 404
+    active["user"] = admin
+    assert http.delete(f'/api/library/{item["id"]}').status_code == 200
+    assert not list(tmp_path.glob("*.png"))
+
+
+def test_library_invalid_cover_does_not_partially_import(business_client, tmp_path, monkeypatch):
+    import app.business_research as research
+    monkeypatch.setattr(research, "LIBRARY_COVER_DIR", tmp_path)
+    http, _, _, _, _ = business_client
+    raw = "title,platform,cover_path\n封面校验,小红书,bad.png\n".encode("utf-8-sig")
+    response = http.post("/api/library/import", files=[
+        ("file", ("covers.csv", raw, "text/csv")),
+        ("covers", ("bad.png", b"invalid-image", "image/png")),
+    ])
+    assert response.status_code == 422
+    assert http.get("/api/library").json()["total"] == 0
+    assert not list(tmp_path.iterdir())

@@ -1,37 +1,116 @@
-# CreatorOS · 爆款实验室
+# CreatorOS v1
 
-Windows 桌面版可双击桌面的 **CreatorOS 爆款实验室** 图标，或项目根目录 `CreatorOS.cmd`。当前运行包在 `data/desktop/CreatorOS-0.1.1/CreatorOS.exe`，`data/desktop/current.json` 记录入口。窗口自动连接或启动本机服务，关闭窗口后分析服务继续运行。重新生成入口使用 `.\scripts\install-desktop.ps1`，仅恢复快捷方式使用 `-SkipBuild`。详见 [桌面版说明](docs/DESKTOP.md)。
+**CreatorOS · 爆款实验室 — 让每一次创作都有数据依据。**
 
-让每一次创作都有数据依据。面向 AI 工具、编程教育和知识科普创作者的本地研究工作台，以及用于验收第一单的老板后台。
+面向创作者的内容研究工作台，配套一人公司运营后台。支持 Windows 桌面入口与本地 Web：从作品上传、MiMo 画面识别与创作建议，到关联实验、客户咨询、报价、接单、交付与验收，记录完整过程。
 
-## Windows 启动
+本仓库是第一阶段源码交付。完整产品、使用和工程说明见 **[项目说明书](docs/PROJECT_GUIDE.md)**，版本变化见 [CHANGELOG](CHANGELOG.md)。
 
-在 PowerShell 中运行。需要 Node.js 20.9+ 和 Python 3.11+。安装脚本也能使用本机已有的 Codex Python 3.12 运行时。
+## 已实现
+
+- **内容研究**：图片、视频、图集、文稿与字幕上传；真实素材预览及弹窗放大；作品标题唯一校验；本地基础分析与 MiMo 深度分析。
+- **AI 协作**：七阶段持久化工作流、运行动画、失败节点重试、取消、预算预留、报告版本及导出。图片和小视频送模型识别，较大视频使用真实关键帧。
+- **事实核查**：按用户确认调用 MiMo 联网搜索，将有来源的事实偏差和未能查证的事项交给用户审阅，结合结果生成标题、开头和脚本草案。
+- **研究积累**：对标资料库、CSV/XLSX 与封面导入、检索筛选、收藏、指标快照、趋势和排行、创作者档案与头像、由修改建议直接创建实验。
+- **客户服务**：注册客户咨询、客户与老板同步的需求状态和回复、客服工单、订单交付与确认验收。
+- **经营后台**：服务与报价管理、人工审批、接单金额统计、模型成本估算、审计和经营周报。历史模拟业务不进入当前经营统计。
+- **桌面体验**：双击图标启动、本地服务自动连接、单实例、隔离渲染、默认记住登录 30 天；主动退出撤销会话。
+
+**当前经营金额表示已确认并接单的订单金额，尚未接入真实收付款。** 本地模式不调用付费模型；AI 模式需配置凭证并确认预算。项目不提供图像或视频生成。
+
+## 环境
+
+- Windows 10/11、PowerShell。
+- Node.js **24 LTS**，或 22.12+ 的 Node 22；Python **3.11+**，推荐 3.12。
+- Git；首次安装需可访问 npm、PyPI 和 Electron 下载源。
+- 默认 SQLite，无需 Docker。FFmpeg 使用项目依赖提供的运行程序。
+
+## 快速开始
+
+在新目录中克隆。私有仓库需要 GitHub 账号具有访问权限。
 
 ```powershell
-Set-Location 'D:\JUNCTION2026\CreatorOS'
+git clone https://github.com/sunpeng10/CreatorOS-v1.git
+Set-Location .\CreatorOS-v1
 Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 .\scripts\setup.ps1
 .\scripts\start.ps1
 ```
 
-默认打开 [首页](http://127.0.0.1:3000)、[登录](http://127.0.0.1:3000/login) 或 [OpenAPI](http://127.0.0.1:8000/docs)。端口被占用时以启动输出为准。脚本只监听 `127.0.0.1`，停止请运行 `.\scripts\stop.ps1`。已安装依赖后可用 `.\scripts\setup.ps1 -SkipInstall` 重新运行迁移和初始化。
+默认访问：
 
-首次初始化生成随机管理员密码。仅在本机查看 `data\admin-credentials.txt`，使用同一个登录页登录，进入 `/admin`。普通客户从 `/register` 建立隔离工作区。若需自行指定密码，在全新数据库上先执行迁移，再在 `services\api` 执行 `..\..\.venv\Scripts\python.exe -m app.cli init-admin --email <email>`，按终端提示输入。
+- 首页：<http://127.0.0.1:3000>
+- 登录：<http://127.0.0.1:3000/login>
+- API 文档：<http://127.0.0.1:8000/docs>
 
-## 功能与数据
+端口被占用时以脚本输出为准。初次初始化的随机管理员凭证只写入本机 `data/admin-credentials.txt`，不会进入 Git。普通用户从 `/register` 注册独立工作区。
 
-- **内容研究**：上传 MP4/MOV、图集、图文与 SRT/VTT。单次总计 100 MB，最多 12 个文件，视频不超过 10 分钟、4K。上传后可以预览、查看关键帧、跑本地基础分析，保存编辑版本并导出 Markdown 或 JSON。
-- **对标和指标**：从作品库手动录入或导入 CSV，标题、作者、真实来源、采集时间应来自可使用资料。明确点击添加 Demo 才导入示例。指标页支持 CSV/XLSX，`title` 或 `content_id` 必填；可使用 `observed_at,views,likes,comments,shares,favorites`，通过预览映射自定义表头。空指标保留空值。测试样例见 `fixtures`。
-- **MiMo**：在项目根目录的 `.env` 配置 `MIMO_API_KEY`，重启服务。默认使用官方按量端点与 Flash/Pro 模型。Token Plan 需配置对应官方地址和凭证。状态检查查询模型列表。用户勾选数据传输和估算预算、点击开始后，才发送所需素材。未配置时可使用本地研究、推荐、数据导入和商业 Demo。
-- **老板后台**：留资、报价草案、人工审批、Demo 订单、模拟支付、报告交付、客户验收、工单和周报。Demo 收入独立核算。真实支付、退款、公开发布及数据删除需要人工操作。
+停止项目服务：
 
-## 开发与验收
+```powershell
+.\scripts\stop.ps1
+```
 
-`apps/web` 是 Next.js 工作台，`services/api` 是 FastAPI、SQLAlchemy 和 Alembic，`data` 保存数据库、私有素材和运行日志，`scripts` 提供 Windows 启停和测试。`.\scripts\test.ps1` 执行 API、前端单测、lint、类型检查和构建。服务运行时可执行 `.\scripts\test.ps1 -Browser`，运行相同检查并以 Edge 验收当前构建。该模式跳过重新构建，避免影响运行中的服务。用于验收的视频可用 `.\.venv\Scripts\python.exe scripts\generate_fixtures.py` 生成。
+### Windows 桌面图标
 
-浏览器验收优先使用本机 Codex 自带的 Playwright。在没有该运行时的机器上，从项目根目录执行 `npm install --no-save --prefix scripts playwright@1.62.1`。可用 `CREATOROS_EDGE` 和 `CREATOROS_CHROME` 指定浏览器 exe，通过 `CREATOROS_BROWSER` 切换浏览器。默认测试只跑本地分析。
+先完成上面的初始化，再运行：
 
-需要关闭进程再复制 `data/creatoros.db` 与 `data/uploads`，或使用 SQLite 一致性备份。恢复前先备份当前副本。`.env` 和本地随机账号凭证应单独保管。上传文件经过签名和解码校验，本地版本没有集成防病毒扫描。切换 PostgreSQL 时使用 `postgresql+psycopg://…` 并重新执行 Alembic，现有 SQLite 数据迁移需另行完成。
+```powershell
+.\scripts\install-desktop.ps1
+```
 
-公开部署前按 [OWNER_ACTIONS.md](docs/OWNER_ACTIONS.md) 配置 TLS、Cookie、备份、访问控制、平台授权及支付提供商。Windows 无法启动时，先检查 `data/logs`，网络问题请核对 npm/PyPI 可达性，Python 可用 `setup.ps1 -PythonPath <绝对路径>` 指定。详细验收见 [TEST_REPORT.md](docs/TEST_REPORT.md)。
+双击桌面上的 **CreatorOS 爆款实验室** 即可进入。`CreatorOS.cmd` 是本机运行包的备用入口。关闭桌面窗口后，本地服务继续运行；移动项目目录后重新建立入口。详见 [桌面说明](docs/DESKTOP.md)。
+
+### 启用 MiMo
+
+`setup.ps1` 在缺少配置时复制 `.env.example` 为 `.env`。在本机 `.env` 中填写自己的 `MIMO_API_KEY`，按需调整官方端点与模型，然后重启服务。
+
+- 默认模型：`mimo-v2.6-flash` 与 `mimo-v2.6-pro`。
+- 联网核查需要 MiMo 控制台开通联网服务插件。
+- 单任务预算由用户设置，最高 10 元；所有费用均为估算，以供应商实际账单为准。
+- 首次使用或升级登录记忆后，勾选“记住登录（30天）”登录一次。
+
+无 Key 时可正常使用本地分析、资料库、数据导入和其他本地业务功能。凭证配置及尚待外部接入的事项见 [OWNER_ACTIONS](docs/OWNER_ACTIONS.md)。
+
+## 工程结构
+
+```text
+apps/web/         Next.js + React + TypeScript 中文界面与同源 API 代理
+apps/desktop/     Electron 桌面外壳、打包及会话持久化
+services/api/     FastAPI、SQLAlchemy、Alembic、AI/研究/商务逻辑
+fixtures/         明确标注 TEST / DEMO 的测试样例
+scripts/          Windows 安装、启停、检查与维护脚本
+docs/             项目说明、架构、模块说明、验收记录
+```
+
+`data/`、`web_data/`、`.env`、账号凭证、客户上传、数据库、日志、依赖目录及桌面运行包均留在本机。仓库保留源码、锁定依赖、迁移脚本和项目静态资源，新机器通过安装脚本重建环境。
+
+## 检查
+
+```powershell
+# 后端测试
+.\.venv\Scripts\python.exe -m pytest services/api/tests -q
+
+# 前端测试与构建
+npm.cmd --prefix apps/web test
+npm.cmd --prefix apps/web run build
+
+# 桌面逻辑测试，不启动桌面窗口
+npm.cmd --prefix apps/desktop test
+```
+
+完整工程检查入口是 `.\scripts\test.ps1`；浏览器验收是显式可选项，见 [验收记录](docs/TEST_REPORT.md)。测试模型响应采用模拟传输，不需要真实付费调用。
+
+## 文档导航
+
+- [项目说明书：使用、配置、业务与维护](docs/PROJECT_GUIDE.md)
+- [架构与数据关系](docs/ARCHITECTURE.md)
+- [MiMo 与工作流](docs/AI_NOTES.md)
+- [研究、订单与经营口径](docs/BUSINESS_NOTES.md)
+- [Windows 桌面版](docs/DESKTOP.md)
+- [操作演示](docs/DEMO_SCRIPT.md)
+- [版本交付说明](docs/FINAL_REPORT.md)
+- [验收记录](docs/TEST_REPORT.md)
+- [所有者操作](docs/OWNER_ACTIONS.md)
+
+GitHub 保存项目源码，不会自动启动服务或发布网站。公网访问、真实资金、外部发布、自动语音转录及生产部署仍需后续配置或开发。

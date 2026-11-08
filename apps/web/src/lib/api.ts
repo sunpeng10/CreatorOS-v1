@@ -41,7 +41,11 @@ export function rows(data: any): Row[] {
       ? data.items
       : [];
 }
-export function useResource<T = any>(path: string | null, intervalMs = 0) {
+export function useResource<T = any>(
+  path: string | null,
+  intervalMs = 0,
+  load: (path: string) => Promise<T> = api,
+) {
   const [data, setData] = useState<T | null>(null);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(!!path);
@@ -51,7 +55,7 @@ export function useResource<T = any>(path: string | null, intervalMs = 0) {
       if (!quiet) setLoading(true);
       setError("");
       try {
-        setData(await api<T>(path));
+        setData(await load(path));
       } catch (e) {
         if (e instanceof ApiError && [401, 403].includes(e.status))
           setData(null);
@@ -60,7 +64,7 @@ export function useResource<T = any>(path: string | null, intervalMs = 0) {
         setLoading(false);
       }
     },
-    [path],
+    [path, load],
   );
   useEffect(() => {
     void refresh();

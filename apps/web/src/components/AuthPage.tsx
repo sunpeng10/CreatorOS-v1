@@ -73,7 +73,7 @@ export default function AuthPage({ register = false }: { register?: boolean }) {
         <Link href="/" className="back-link">
           ← 返回官网
         </Link>
-        <div className="auth-form-inner">
+        <div className={`auth-form-inner ${register ? "" : styles.formArtwork}`}>
           <BadgeText />
           <h1>{register ? "建立你的创作工作区" : "欢迎回到实验室"}</h1>
           <p>

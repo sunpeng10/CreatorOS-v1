@@ -1,4 +1,5 @@
 "use client";
+import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import {
   ArrowDown,
@@ -22,8 +23,99 @@ import artworkStyles from "./LandingArtwork.module.css";
 export default function Landing() {
   const services = useResource("/services", 15000),
     me = useResource("/auth/me");
+  const landingRef = useRef<HTMLDivElement>(null);
+  const contactRef = useRef<HTMLElement>(null);
+  const [selectedPlan, setSelectedPlan] = useState("0");
+  const servicePlans = [...rows(services.data)].sort(
+    (a, b) => Number(a.price) - Number(b.price),
+  );
+
+  useEffect(() => {
+    const root = landingRef.current;
+    const motion = window.matchMedia("(prefers-reduced-motion: reduce)");
+    if (
+      !root ||
+      !("IntersectionObserver" in window) ||
+      motion.matches
+    )
+      return;
+    const frames = new Set<number>();
+    const cards = root.querySelectorAll<HTMLElement>(
+      "[data-reveal]:not([data-revealed])",
+    );
+    const nextFrame = (callback: () => void) => {
+      const frame = requestAnimationFrame(() => {
+        frames.delete(frame);
+        callback();
+      });
+      frames.add(frame);
+    };
+    const observer = new IntersectionObserver(
+      (entries) => {
+        entries.forEach((entry) => {
+          if (!entry.isIntersecting) return;
+          observer.unobserve(entry.target);
+          const card = entry.target as HTMLElement;
+          // Paint the hidden state before starting the entrance animation.
+          nextFrame(() =>
+            nextFrame(() => {
+              card.dataset.revealed = "true";
+              card.classList.add("is-visible");
+            }),
+          );
+        });
+      },
+      { threshold: 0.15, rootMargin: "0px 0px -48px 0px" },
+    );
+    cards.forEach((card) => {
+      card.classList.add("reveal-pending");
+      observer.observe(card);
+    });
+    const stopMotion = () => {
+      if (!motion.matches) return;
+      observer.disconnect();
+      frames.forEach(cancelAnimationFrame);
+      frames.clear();
+      cards.forEach((card) => {
+        card.dataset.revealed = "true";
+        card.classList.remove("reveal-pending", "is-visible");
+      });
+    };
+    motion.addEventListener("change", stopMotion);
+    return () => {
+      observer.disconnect();
+      frames.forEach(cancelAnimationFrame);
+      motion.removeEventListener("change", stopMotion);
+    };
+  }, [services.data]);
+
+  function consultService(price: unknown) {
+    const value = String(Number(price));
+    setSelectedPlan(value);
+    const select = contactRef.current?.querySelector<HTMLSelectElement>(
+      'select[name="service_plan"]',
+    );
+    if (select) select.value = value;
+    contactRef.current?.scrollIntoView({
+      behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches
+        ? "instant"
+        : "smooth",
+      block: "start",
+    });
+  }
+
   return (
-    <div className="landing">
+    <div
+      className="landing"
+      ref={landingRef}
+      onAnimationEnd={(event) => {
+        if (event.animationName === "landing-reveal")
+          (event.target as HTMLElement).classList.remove(
+            "reveal-pending",
+            "is-visible",
+          );
+      }}
+    >
       <header className="site-nav">
         <Link href="/" className="brand">
           <span className="brand-symbol">
@@ -32,7 +124,7 @@ export default function Landing() {
           Creator<span className="brand-os">OS</span>
           <span className="brand-cn">爆款实验室</span>
         </Link>
-        <nav>
+        <nav aria-label="主导航">
           <a href="#method">产品方法</a>
           <a href="#features">功能探索</a>
           <a href="#pricing">服务方案</a>
@@ -40,14 +132,14 @@ export default function Landing() {
         <div className="nav-actions">
           <Link href="/login">登录</Link>
           <Link href="/register" className="btn btn-dark">
-            进入工作台
+            注册
             <ArrowUpRight size={16} />
           </Link>
         </div>
       </header>
       <main>
         <section className="hero">
-          <div className="hero-copy">
+          <div className="hero-copy" data-reveal>
             <div className="hero-kicker">
               <span /> 为认真创作的人，建立增长方法
             </div>
@@ -83,8 +175,25 @@ export default function Landing() {
               <Check size={14} /> 本地基础分析可用 <span>·</span> AI 按需启用{" "}
               <span>·</span> 无需连接社交账号
             </div>
+            <div className="hero-proof" aria-label="创作研究流程">
+              <div>
+                <strong>01</strong><span>拆解内容</span>
+              </div>
+              <div>
+                <strong>02</strong><span>连接证据</span>
+              </div>
+              <div>
+                <strong>03</strong><span>验证创意</span>
+              </div>
+            </div>
           </div>
-          <div className="hero-visual">
+          <div className="hero-visual" data-reveal>
+            <div className="hero-visual-label">
+              <span>YOUR NEXT CREATIVE EXPERIMENT</span>
+              <span>
+                <i aria-hidden="true" />研究报告预览
+              </span>
+            </div>
             <div className="orbit-label">CONTENT INTELLIGENCE / 01</div>
             <div className="visual-dots" />
             <div className="specimen">
@@ -146,7 +255,7 @@ export default function Landing() {
             </div>
           </div>
         </section>
-        <section className="audience-strip">
+        <section className="audience-strip" data-reveal>
           <span>为知识型创作者设计</span>
           <b>AI 工具探索</b>
           <b>编程与教育</b>
@@ -155,7 +264,7 @@ export default function Landing() {
           <ArrowDown size={18} />
         </section>
         <section id="method" className="landing-section">
-          <div className="section-heading">
+          <div className="section-heading" data-reveal>
             <div>
               <span className="eyebrow">A BETTER CREATIVE LOOP</span>
               <h2>
@@ -191,7 +300,7 @@ export default function Landing() {
                 text: "编辑标题与脚本，记录修改计划，用后续数据回看结果。",
               },
             ].map((x) => (
-              <article key={x.n}>
+              <article key={x.n} data-reveal>
                 <div className="method-top">
                   <x.icon size={26} strokeWidth={1.5} />
                   <span>{x.n}</span>
@@ -203,7 +312,7 @@ export default function Landing() {
           </div>
         </section>
         <section id="features" className="feature-section">
-          <div>
+          <div data-reveal>
             <span className="eyebrow">
               ONE WORKSPACE. YOUR CREATIVE SYSTEM.
             </span>
@@ -245,7 +354,7 @@ export default function Landing() {
                 text: "记录假设、版本与观测窗口",
               },
             ].map((x) => (
-              <article key={x.title}>
+              <article key={x.title} data-reveal>
                 <x.icon size={23} />
                 <h3>{x.title}</h3>
                 <p>{x.text}</p>
@@ -254,7 +363,7 @@ export default function Landing() {
           </div>
         </section>
         <section id="pricing" className="landing-section">
-          <div className="section-heading">
+          <div className="section-heading" data-reveal>
             <div>
               <span className="eyebrow">START SMALL. LEARN CONTINUOUSLY.</span>
               <h2>从适合你的研究深度开始。</h2>
@@ -266,11 +375,11 @@ export default function Landing() {
             </p>
           </div>
           <div className="pricing-grid">
-            {rows(services.data).length ? (
-              rows(services.data).map((s, i) => (
-                <article key={s.id} className={i === 1 ? "featured-price" : ""}>
+            {servicePlans.length ? (
+              servicePlans.map((s) => (
+                <article key={s.id} data-reveal>
                   <span className="eyebrow">
-                    {i === 1 ? "深入研究" : "创作者服务"}
+                    {Number(s.price) === 299 ? "深入研究" : "创作者服务"}
                   </span>
                   <h3>{s.name}</h3>
                   <strong>
@@ -281,21 +390,18 @@ export default function Landing() {
                     {s.description ||
                       "具体分析范围与交付内容由工作区管理员确认。"}
                   </p>
-                  <Link
-                    className={`btn ${i === 1 ? "btn-primary" : "btn-secondary"}`}
-                    href={
-                      me.data
-                        ? `/orders?service_id=${s.id}`
-                        : `/login?next=${encodeURIComponent(`/orders?service_id=${s.id}`)}`
-                    }
+                  <button
+                    type="button"
+                    className="btn btn-secondary"
+                    onClick={() => consultService(s.price)}
                   >
-                    选择此服务
+                    咨询此服务
                     <ArrowRight size={16} />
-                  </Link>
+                  </button>
                 </article>
               ))
             ) : (
-              <article className="pricing-empty">
+              <article className="pricing-empty" data-reveal>
                 <h3>让研究从真实需求开始</h3>
                 <p>
                   服务方案正在试运营。留下你的创作方向，我们将根据需求建立可审核的报价。
@@ -311,7 +417,28 @@ export default function Landing() {
             <Notice>服务报价暂时无法读取；你仍可进入工作区或稍后再试。</Notice>
           )}
         </section>
-        <section id="contact" className="contact-section">
+        <section
+          id="contact"
+          className="contact-section"
+          ref={contactRef}
+          data-reveal
+          onSubmitCapture={(event) => {
+            const form = event.target as HTMLFormElement;
+            // Keep the plan in the existing persisted need field as well.
+            form.addEventListener(
+              "formdata",
+              ({ formData }) => {
+                const plan = formData.get("service_plan");
+                if (plan)
+                  formData.set(
+                    "need",
+                    `${formData.get("need") ?? ""}\n\n选择服务方案：${money(plan)}`,
+                  );
+              },
+              { once: true },
+            );
+          }}
+        >
           <div>
             <span className="eyebrow">LET’S FIND YOUR NEXT QUESTION</span>
             <h2>
@@ -333,13 +460,22 @@ export default function Landing() {
           {me.data?.role === "CLIENT_USER" ? (
             <DataForm
               endpoint="/leads"
-              initial={{ contact: me.data.email }}
+              initial={{ contact: me.data.email, service_plan: selectedPlan }}
               fields={[
                 {
                   name: "contact",
                   label: "联系方式",
                   required: true,
                   placeholder: "邮箱 / 微信 / 手机",
+                },
+                {
+                  name: "service_plan",
+                  label: "选择服务方案",
+                  required: true,
+                  options: servicePlans.map((service) => ({
+                    value: String(Number(service.price)),
+                    label: `${service.name} · ${money(service.price)}`,
+                  })),
                 },
                 {
                   name: "need",
@@ -371,7 +507,7 @@ export default function Landing() {
           )}
         </section>
         <section className="faq-section">
-          <h2>开始前，你可能想知道</h2>
+          <h2 data-reveal>开始前，你可能想知道</h2>
           {[
             {
               q: "没有 AI 配置，能使用吗？",
@@ -386,7 +522,7 @@ export default function Landing() {
               a: "不能。我们呈现可观察事实、证据与不确定性，帮助你提出更好的假设。单次表现改善不能证明因果，更不代表增长承诺。",
             },
           ].map((x) => (
-            <details key={x.q}>
+            <details key={x.q} data-reveal>
               <summary>
                 {x.q}
                 <span>+</span>

@@ -6,6 +6,7 @@ import {
   Check,
   FlaskConical,
   Plus,
+  Trash2,
   Upload,
   Users,
 } from "lucide-react";
@@ -18,7 +19,7 @@ import {
   XAxis,
   YAxis,
 } from "recharts";
-import { post, rows, useResource, type Row } from "@/lib/api";
+import { api, post, rows, useResource, type Row } from "@/lib/api";
 import { dateLabel, formatMetric } from "@/lib/format";
 import {
   Badge,
@@ -274,6 +275,8 @@ const metricFields = [
   "observed_at",
   "source",
 ];
+type MetricImport = { file_sha256: string; name: string; snapshots: number };
+
 export function Analytics() {
   const [denominator, setDenominator] = useState("views"),
     [file, setFile] = useState<File | null>(null),
@@ -308,9 +311,33 @@ export function Analytics() {
       setBusy(false);
     }
   }
+  async function deleteImport(group: MetricImport) {
+    if (
+      !window.confirm(
+        `删除「${group.name}」导入的 ${group.snapshots} 条指标记录？统计和图表会重新计算，原始作品会保留。`,
+      )
+    )
+      return;
+    setBusy(true);
+    setError("");
+    setMessage("");
+    try {
+      const result = await api<{ deleted: number }>(
+        `/metrics/imports/${encodeURIComponent(group.file_sha256)}`,
+        { method: "DELETE" },
+      );
+      setMessage(`已删除「${group.name}」的 ${result.deleted} 条指标记录。`);
+      await r.refresh();
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
   const data = r.data || {},
     items = rows(data.items || data.latest),
-    trend = rows(data.trends || data.snapshots);
+    trend = rows(data.trends || data.snapshots),
+    imports = (data.imports || []) as MetricImport[];
   return (
     <>
       <PageHeading
@@ -450,6 +477,30 @@ export function Analytics() {
           {message && <Notice tone="success">{message}</Notice>}
         </div>
       </Card>
+      {imports.length > 0 && (
+        <Card
+          title="已导入文件"
+          subtitle="删除文件对应的指标记录后，统计与图表会同步更新。"
+        >
+          {imports.map((group) => (
+            <div className="library-import-row" key={group.file_sha256}>
+              <div>
+                <strong>{group.name}</strong>
+                <small className="muted">{group.snapshots} 条指标记录</small>
+              </div>
+              <Button
+                variant="ghost"
+                disabled={busy || r.loading}
+                aria-label={`删除指标文件 ${group.name}`}
+                onClick={() => void deleteImport(group)}
+              >
+                <Trash2 size={16} />
+                删除该文件的数据
+              </Button>
+            </div>
+          ))}
+        </Card>
+      )}
       <div className="toolbar">
         <div className="grow">
           <h2>内容表现</h2>
@@ -642,14 +693,12 @@ export function Experiments() {
   const [edit, setEdit] = useState<Row | null | "new">(null);
   useEffect(() => {
     if (!focusedExperiment || !r.data) return;
-    document
-      .getElementById(`experiment-${focusedExperiment}`)
-      ?.scrollIntoView({
-        behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches
-          ? "auto"
-          : "smooth",
-        block: "center",
-      });
+    document.getElementById(`experiment-${focusedExperiment}`)?.scrollIntoView({
+      behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches
+        ? "auto"
+        : "smooth",
+      block: "center",
+    });
   }, [focusedExperiment, r.data]);
   const fields: FormField[] = [
     { name: "title", label: "实验名称", required: true },

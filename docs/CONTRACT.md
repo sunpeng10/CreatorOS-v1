@@ -1,20 +1,63 @@
-# Internal implementation contract
+# CreatorOS v1 · 接口与数据约定
 
-All endpoints prefix `/api`, snake_case JSON. Errors `{error:{code,message}}` (FastAPI detail errors supported by frontend). Lists are `{items:[],total:number}`. IDs string UUIDs. All business entities have id, organization_id, created_at, updated_at, data (JSON dictionary). Explicit scalar/FK attributes listed below. `serialize(entity)` merges data and scalar fields, never leaks password/session data. SQLAlchemy session dependency `get_db`; auth `current_user` returns User with organization_id and role; `require_admin`; `owned(db, Model, id, user)` raises 404 for other org. Utilities available from app.db/app.auth/app.models. Routers imported into app.main.
+完整参数、校验和返回结构以运行中的 `/docs` 和后端代码为准。本文件记录模块边界，使用 snake_case JSON，业务接口统一以 `/api` 开头。
 
-## Shared model contract (root owns models.py)
-User: email,name,password_hash,organization_id,role. Organization:name. Membership:user_id,role. Session:user_id,token_hash,expires_at (datetime). All except Organization scoped organization_id.
-CreatorAccount:name,platform. ContentItem:title,kind,account_id(nullable),text. ContentAsset:content_id,path,original_name,mime,size. ContentAnalysis:content_id,status,mode,report(JSON),task_id(nullable string),cache_key. AnalysisEvidence:analysis_id. ContentVersion:content_id,analysis_id(nullable),version(int). MetricSnapshot:content_id,account_id(nullable),observed_at(string),source,import_hash. BenchmarkItem:title,platform,url,author,category,is_demo(bool). Recommendation:content_id(nullable),benchmark_id,score(float). Experiment:content_id(nullable),analysis_id(nullable),status,title. Lead:contact,need,status,campaign. ServicePlan:name,price(float),active(bool). Quote:lead_id(nullable),service_id(nullable),amount(float),status. Order:quote_id,status,is_demo(bool),amount(float). PaymentRecord:order_id,amount,is_demo,status. Delivery:order_id,analysis_id,status. Ticket:order_id(nullable),subject,status. AgentRun:analysis_id,status,budget(float),cost(float),error(string). AgentStep:run_id,name,status,attempts(int),input(JSON),output(JSON),error(string),model(string),tokens(int). Approval:kind,target_id,status,reason. CostEvent:run_id(nullable),model,input_tokens(int),output_tokens(int),estimated_cost(float). AuditLog:actor_id(nullable),action,target_id.
+## 公共约定
 
-Extra fields belong in `data`. Models have sensible defaults. `stamp()` returns ISO UTC; `new(Model, user, **kwargs)` optional, use model(organization_id=user.organization_id,...). All foreign IDs validate ownership before mutation. Agents may propose root model changes via message.
+列表通常返回 `{items, total}`。ID 为字符串。错误返回 `error.code`、`error.message`，验证错误省略原始敏感输入。业务数据以 organization_id 以及显式客户关联控制权限；管理员端还验证 OWNER_ADMIN。
 
-## Root endpoints
-GET /health; GET /system/ai-status (AI agent owns status); POST /auth/{register,login} body email,password,name (name optional login); GET /auth/me; POST /auth/logout. Register creates org+CLIENT_USER. GET /dashboard returns counts,analyses,orders,accounts. GET/POST /contents; POST /assets/upload multipart files + title,text,platform,category,account_id optional creates content and assets, returns content with assets. GET /assets/{id} private file; GET /contents/{id}; GET /settings/export; POST /settings/deletion-request creates Approval.
+密码使用 Argon2，Session 保存 token_hash 与 expires_at，原始令牌只存 HttpOnly Cookie。实体的 data JSON 保存可选元数据，不能替代归属校验。外来实体 ID 在操作前经 owned 或对应业务访问函数验证。
 
-## AI endpoints
-POST /analyses body content_id,mode='local'|'ai' creates analysis; POST /analyses/{id}/start body {confirm_paid:boolean,budget:number} returns analysis with task_id; GET /analyses list; GET /analyses/{id} returns report and steps; GET /tasks/{id}; POST /tasks/{id}/{cancel,retry}; GET /analyses/{id}/export?format=json|markdown; POST /analyses/{id}/versions body {title,script}; GET /contents/{id}/versions. Local analysis runs without any paid call. AI explicit consent+configured key required. GET /system/ai-status safe configured,models,connectivity. Workflow stages COO,content,data,retrieval,strategy,quality,business. Report fields summary,findings[{label,evidence,location,confidence}],titles[],hooks[],script,tasks[],limitations[],source ('local'|'mimo').
+## 认证与基础资料
 
-## Business endpoints
-GET/POST /accounts; GET/PATCH /accounts/{id}. GET/POST /library; POST /library/import multipart file; GET/DELETE /library/{id}; POST /library/{id}/favorite; POST /library/demo explicitly imports labeled fixtures. POST /recommendations/search {query,content_id?,limit:3..10,include_demo:false} => items with similarity,relative_performance,reasons,data_completeness. POST /metrics/preview multipart file,mapping(JSON optional),account_id; POST /metrics/import same; GET /analytics/overview?denominator=views => items,trends,rankings,limitations,source. GET/POST /experiments; PATCH /experiments/{id}. POST /leads public {contact,need,campaign}. GET/POST /tickets; PATCH /tickets/{id}. GET /services public; GET /orders client; POST /orders/{id}/accept. GET /admin/overview; GET/PATCH /admin/leads[/{id}]; GET/POST/PATCH /admin/services[/{id}]; GET/POST /admin/quotes; GET/POST /admin/orders; POST /admin/orders/{id}/simulate-payment; POST /admin/orders/{id}/deliver {analysis_id}; GET /admin/tickets; GET /admin/finance; GET /admin/weekly-report; GET /admin/agents; GET /admin/data; GET /approvals admin; POST /approvals/{id}/decision {decision:'APPROVED'|'REJECTED',reason}. POST quote creates pending Approval; order only from approved Quote; payment only DEMO; deliver only report-owned, succeeded analysis; accept marks completed. Admin business operations stay in admin org; demo customer can be own admin workspace.
+- `POST /auth/register`、`POST /auth/login`：email、password、可选 name、remember_me；默认记住登录 30 天，false 使用非持久 Cookie。
+- `GET /auth/me`、`POST /auth/logout`：读取当前身份、撤销当前会话。
+- `GET /dashboard`：工作区统计及相同口径的明细。
+- `GET/POST /contents`、`GET /contents/{id}`：作品与背景。
+- `POST /assets/upload`：multipart files、title、text 和可选作品背景，创建作品及私有素材。
+- `GET /assets/{id}`：经授权的文件预览或下载。
+- `GET /settings/export`、`POST /settings/deletion-request`：用户范围的数据导出与删除申请。
 
-Frontend should consume these contracts and coordinate discrepancies. No arbitrary external URL fetching. Uploaded content untrusted; model output rendered as text only.
+同一工作区的新建／改名作品标题不能重复；原文件名和私有随机路径保留，界面、下载和审批使用可读作品标题。
+
+## 分析与实验
+
+- `POST /analyses`：content_id、mode=local 或 ai。创建 AI 分析不触发付费调用。
+- `POST /analyses/{id}/start`：confirm_paid、budget、allow_web_search；预算最高 10 元，外部调用须授权并配置服务。
+- `GET /analyses`、`GET /analyses/{id}`：分页历史、报告和步骤。
+- `PATCH /analyses/{id}`：备注；`DELETE /analyses/{id}`：受保护的历史隐藏，非素材物理删除。
+- `GET /tasks/{id}`、`POST /tasks/{id}/cancel`、`POST /tasks/{id}/retry`：状态与恢复。
+- `GET /analyses/{id}/export?format=markdown|json`、`POST /analyses/{id}/versions`、`GET /contents/{id}/versions`：导出和版本。
+- `POST /analyses/{id}/experiments`：task_index，按所选报告建议幂等创建关联实验。
+- `GET/POST /experiments`、`PATCH /experiments/{id}`：研究实验管理。
+- `GET /system/ai-status`：只读配置与模型列表，不返回 Key，不发付费测试提示。
+
+七阶段：COO、content、data、retrieval、strategy、quality、business。报告保留 summary、findings、titles、hooks、script、tasks、source 及结构化 fact_checks、sources、search_status、media_received 等字段。旧 limitations 为兼容／导出保留，界面改用精简必要说明。
+
+## 研究与数据
+
+- `GET/POST /accounts`、`GET/PATCH /accounts/{id}`、`POST/GET /accounts/{id}/avatar`：创作者档案及头像。
+- `GET/POST /library`、`POST /library/import`：手工和 multipart CSV/XLSX、可选 covers 导入。
+- `GET/DELETE /library/{id}`、`GET /library/{id}/cover`、`POST /library/{id}/favorite`：资料和封面。
+- `POST /library/demo`：显式导入 Demo 样例。
+- `POST /recommendations/search`：query、可选 content_id、limit、include_demo。
+- `POST /metrics/preview`、`POST /metrics/import`：表格和映射预览／导入。
+- `DELETE /metrics/imports/{file_sha256}`：删除本人工作区对应指标批次。
+- `GET /analytics/overview`：趋势、排行、比较、来源和口径。
+
+指标缺失保持空值；外部链接仅保存与显示，不由后端任意抓取。引用及封面操作均遵循工作区权限。
+
+## 客户、订单与老板后台
+
+- `GET /services`：当前可用服务，按价格升序；`POST /leads` 需要登录客户身份。
+- `GET/POST /orders`、`POST /orders/{id}/confirm`、`POST /orders/{id}/accept`：客户下单、确认报价订单、确认验收。
+- `GET/POST /tickets`、`PATCH /tickets/{id}`：客户关联的咨询、回复和处理状态。
+- `GET /admin/overview`、`GET/PATCH /admin/leads` 及详情：公司与线索。
+- `/admin/services`、`/admin/quotes`：服务配置、报价及审批。
+- `/admin/orders` 与 `/admin/orders/{id}/accept|complete|deliver`：报价订单、接单、完成服务或交付报告。
+- `GET /admin/tickets`、`GET /admin/finance`、`GET /admin/weekly-report`、`GET /admin/agents`、`GET /admin/data`：工单、经营与审计。
+- `GET /approvals`、`POST /approvals/requests`、`POST /approvals/{id}/decision`：人工决策，reason 必填。
+
+定制报价订单先 AWAITING_CUSTOMER，客户确认后 REQUESTED；直接确认的服务订单进入 REQUESTED。老板接单后 IN_PROGRESS，交付后 DELIVERED，客户二次确认后 COMPLETED。接单及确认保持幂等。
+
+当前按已接单金额记账，未接资金支付。旧 simulate-payment 入口停用，旧 Demo 退出当前统计。客户回复与内部备注分开；工单本身不生成订单。退款、发布、真实付款与删除等审批批准不代表外部操作已执行。

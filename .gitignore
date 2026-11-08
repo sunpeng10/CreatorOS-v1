@@ -6,6 +6,15 @@ CODEX_TASK.md
 node_modules/
 .next/
 data/
+web_data/
+*.db
+*.db-*
+*.sqlite
+*.sqlite3
+*-credentials.txt
+*-credentials.json
+*.pem
+*.key
 __pycache__/
 .pytest_cache/
 *.pyc

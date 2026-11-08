@@ -26,3 +26,40 @@
   opacity: 0.56;
   pointer-events: none;
 }
+
+.formArtwork {
+  position: relative;
+  isolation: isolate;
+}
+
+.formArtwork::before {
+  content: "";
+  position: absolute;
+  top: 6px;
+  right: -28px;
+  width: 160px;
+  aspect-ratio: 881 / 914;
+  background: url("/images/little-prince-03.png") center / contain no-repeat;
+  opacity: 0.86;
+  filter: drop-shadow(0 6px 14px rgb(61 98 73 / 8%));
+  pointer-events: none;
+  z-index: -1;
+}
+
+@media (max-width: 700px) {
+  .formArtwork::before {
+    top: 4px;
+    right: -8px;
+    width: 120px;
+    opacity: 0.8;
+  }
+}
+
+@media (max-width: 380px) {
+  .formArtwork::before {
+    top: -10px;
+    right: 0;
+    width: 90px;
+    opacity: 0.65;
+  }
+}
