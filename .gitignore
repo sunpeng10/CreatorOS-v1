@@ -6,7 +6,6 @@ CODEX_TASK.md
 node_modules/
 .next/
 data/
-web_data/
 *.db
 *.db-*
 *.sqlite

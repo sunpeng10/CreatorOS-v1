@@ -1,0 +1,16 @@
+CreatorOS 对标作品研究库 - 160 条模拟测试数据
+
+1. CSV：CreatorOS_对标作品资料_160条_含封面.csv（UTF-8 BOM 编码）
+2. 图片：covers/ 文件夹内 160 张 WebP 图片（480×640 像素）
+3. 预览：双击“封面预览.html”，可在浏览器里按平台、类别筛选预览。
+4. CSV 列：title,platform,url,author,category,tags,text,views,likes,comments,shares,favorites,collected_at,cover_image
+5. cover_image 是相对于本说明文件所在目录的路径，例如 covers/douyin_001.webp。
+6. 平台字段约定：
+   抖音 likes/comments/shares；B站 views/likes/favorites/shares；
+   小红书 likes/comments/favorites；视频号 likes/comments/shares。
+   其他指标留空，不用 0 填补；url 留空以避免伪造真实作品链接。
+7. 全部作品、作者、统计值为模拟数据，不代表真实平台内容或真实互动量。
+   封面基于 AI 生成的主题图片进行了裁切、排版和标题合成，不是对应真实作品的封面。
+8. 注意：如果网站当前的 CSV 导入仅识别旧的13列，必须增加 cover_image 字段处理；
+   仅上传 CSV 不会自动把本地图片文件上传到服务器。需让网站实现压缩包上传、
+   或将 covers 目录部署到可访问的静态文件/对象存储，并解析其路径。
