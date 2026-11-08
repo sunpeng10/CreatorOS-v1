@@ -45,6 +45,7 @@ import {
 import { ChineseDateInput, EditableChoice } from "../ContentFields";
 import { ReportMedia } from "../ReportMedia";
 import { CONTENT_CATEGORIES, CONTENT_PLATFORMS } from "@/lib/content-options";
+import artworkStyles from "./AnalysisArtwork.module.css";
 
 function UploadPreview({ file, name }: { file: File; name: string }) {
   const image = /\.(jpe?g|png|webp)$/i.test(file.name);
@@ -492,6 +493,16 @@ export function Analyze() {
             <p>
               我们支持标题、脚本与策略建议。不提供文生图或视频生成；你始终保留创作判断。
             </p>
+          </div>
+          <div className={artworkStyles.panel} aria-hidden="true">
+            <img
+              src="/images/analysis-little-prince.jpg"
+              alt=""
+              width={897}
+              height={1410}
+              loading="lazy"
+              decoding="async"
+            />
           </div>
         </div>
       </div>
