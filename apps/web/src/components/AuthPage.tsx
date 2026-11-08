@@ -10,6 +10,7 @@ import {
 } from "lucide-react";
 import { post } from "@/lib/api";
 import { Button, Field, Notice } from "./ui";
+import styles from "./AuthArtwork.module.css";
 export default function AuthPage({ register = false }: { register?: boolean }) {
   const router = useRouter();
   const [hydrated, setHydrated] = useState(false);
@@ -43,7 +44,7 @@ export default function AuthPage({ register = false }: { register?: boolean }) {
             <br />
             研究、实验、复盘，让每一次进步都有迹可循。
           </p>
-          <div className="auth-motif">
+          <div className={`auth-motif ${styles.motif}`}>
             <ChartNoAxesCombined size={100} strokeWidth={1} />
             <span>INSIGHT → EXPERIMENT → GROWTH</span>
           </div>

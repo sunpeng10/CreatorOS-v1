@@ -1,0 +1,37 @@
+.legal:global(.legal-section) {
+  position: relative;
+  min-height: 280px;
+  padding-right: 300px;
+}
+
+.legal::after {
+  content: "";
+  position: absolute;
+  right: 0;
+  bottom: 10px;
+  width: 260px;
+  height: 262px;
+  background: url("/images/little-prince-01.png") center / contain no-repeat;
+  opacity: 0.64;
+  pointer-events: none;
+}
+
+@media (max-width: 700px) {
+  .legal:global(.legal-section) {
+    min-height: 230px;
+    padding-right: 190px;
+  }
+
+  .legal::after {
+    width: 170px;
+    height: 172px;
+  }
+}
+
+@media (max-width: 480px) {
+  .legal:global(.legal-section) {
+    min-height: 0;
+    padding-right: 0;
+    padding-bottom: 195px;
+  }
+}

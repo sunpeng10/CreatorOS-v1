@@ -1,0 +1,34 @@
+.banner:global(.workspace-banner) {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(180px, 0.85fr);
+  gap: 24px;
+}
+
+.copy {
+  min-width: 0;
+}
+
+.artwork {
+  width: 100%;
+  height: clamp(210px, 23vw, 265px);
+  background-image: url("/images/little-prince-03.png");
+  background-position: center;
+  background-size: contain;
+  background-repeat: no-repeat;
+  pointer-events: none;
+  user-select: none;
+}
+
+@media (max-width: 600px) {
+  .banner:global(.workspace-banner) {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 16px;
+  }
+
+  .artwork {
+    justify-self: end;
+    width: min(240px, 100%);
+    height: 215px;
+    background-position: right center;
+  }
+}

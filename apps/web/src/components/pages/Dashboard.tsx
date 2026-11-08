@@ -13,6 +13,7 @@ import {
 } from "lucide-react";
 import { rows, useResource } from "@/lib/api";
 import { analysisLabel, dateLabel, formatMetric, label } from "@/lib/format";
+import styles from "./DashboardArtwork.module.css";
 import {
   Card,
   Badge,
@@ -84,8 +85,8 @@ export default function Dashboard() {
           onClick={() => setDetail("experiments")}
         />
       </div>
-      <section className="workspace-banner">
-        <div>
+      <section className={`workspace-banner ${styles.banner}`}>
+        <div className={styles.copy}>
           <span className="eyebrow">MAKE YOUR NEXT PIECE BETTER</span>
           <h2>
             把一个创作问题，
@@ -98,15 +99,7 @@ export default function Dashboard() {
             <ArrowRight size={17} />
           </Link>
         </div>
-        <div className="banner-graphic" aria-hidden="true">
-          <div>
-            <ScanText size={36} />
-          </div>
-          <span />
-          <div>
-            <FlaskConical size={36} />
-          </div>
-        </div>
+        <div className={styles.artwork} aria-hidden="true" />
       </section>
       <div className="dashboard-columns">
         <Card

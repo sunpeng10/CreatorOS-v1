@@ -1,0 +1,28 @@
+.motif:global(.auth-motif) {
+  position: relative;
+  min-height: clamp(180px, 20vw, 270px);
+}
+
+.motif > svg {
+  visibility: hidden;
+}
+
+.motif > span {
+  position: absolute;
+  left: 0;
+  top: 50%;
+  transform: translateY(-50%);
+}
+
+.motif::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: calc(100% - 35px);
+  max-width: 300px;
+  height: 100%;
+  background: url("/images/little-prince-02.png") center / contain no-repeat;
+  opacity: 0.56;
+  pointer-events: none;
+}

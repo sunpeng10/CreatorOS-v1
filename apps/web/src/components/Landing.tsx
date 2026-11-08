@@ -18,6 +18,7 @@ import {
 import { rows, useResource } from "@/lib/api";
 import { money } from "@/lib/format";
 import { DataForm, Notice } from "./ui";
+import artworkStyles from "./LandingArtwork.module.css";
 export default function Landing() {
   const services = useResource("/services", 15000),
     me = useResource("/auth/me");
@@ -394,7 +395,7 @@ export default function Landing() {
             </details>
           ))}
         </section>
-        <section id="privacy" className="legal-section">
+        <section id="privacy" className={`legal-section ${artworkStyles.legal}`}>
           <h3>隐私说明与用户协议 · 本地试运营草稿</h3>
           <p>
             仅上传你有权使用的内容。作品、指标、账号和报告保存在本地工作区，并通过组织权限隔离。启用
