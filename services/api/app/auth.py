@@ -23,6 +23,7 @@ class Credentials(BaseModel):
     email: str = Field(min_length=3, max_length=254)
     password: str = Field(min_length=10, max_length=128)
     name: str = Field(default='创作者', min_length=1, max_length=100)
+    remember_me: bool = True
 
     @field_validator('email')
     @classmethod
@@ -66,7 +67,7 @@ def owned(db, model, identifier, user):
     return record
 
 
-def issue_session(db, user, response, request=None):
+def issue_session(db, user, response, request=None, *, remember_me=True):
     from .customer_links import link_email_leads
     link_email_leads(db, user)
     if request:
@@ -76,10 +77,12 @@ def issue_session(db, user, response, request=None):
             if old:
                 db.delete(old)
     token = secrets.token_urlsafe(48)
-    db.add(Session(organization_id=user.organization_id, user_id=user.id, token_hash=hashlib.sha256(token.encode()).hexdigest(), expires_at=datetime.now(timezone.utc) + timedelta(days=7)))
+    expires = datetime.now(timezone.utc) + timedelta(days=30 if remember_me else 7)
+    db.add(Session(organization_id=user.organization_id, user_id=user.id, token_hash=hashlib.sha256(token.encode()).hexdigest(), expires_at=expires))
     db.add(AuditLog(organization_id=user.organization_id, actor_id=user.id, action='AUTH_SESSION_CREATED', target_id=user.id))
     db.commit()
-    response.set_cookie(COOKIE, token, httponly=True, secure=os.getenv('COOKIE_SECURE', 'false').lower() == 'true', samesite='lax', max_age=604800, path='/')
+    response.set_cookie(COOKIE, token, httponly=True, secure=os.getenv('COOKIE_SECURE', 'false').lower() == 'true', samesite='lax',
+                        max_age=30 * 86400 if remember_me else None, expires=expires if remember_me else None, path='/')
 
 
 def create_user(db, email, password, name, role='CLIENT_USER'):
@@ -101,7 +104,7 @@ def register(body: Credentials, response: Response, request: Request, db: DBSess
     except IntegrityError:
         db.rollback()
         raise HTTPException(409, '该邮箱已注册')
-    issue_session(db, user, response, request)
+    issue_session(db, user, response, request, remember_me=body.remember_me)
     return serialize(user)
 
 
@@ -116,7 +119,7 @@ def login(body: Credentials, response: Response, request: Request, db: DBSession
             valid = False
     if not valid:
         raise HTTPException(401, '邮箱或密码错误')
-    issue_session(db, user, response, request)
+    issue_session(db, user, response, request, remember_me=body.remember_me)
     return serialize(user)
 
 

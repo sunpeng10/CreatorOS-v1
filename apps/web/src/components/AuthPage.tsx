@@ -8,7 +8,7 @@ import {
   Check,
   FlaskConical,
 } from "lucide-react";
-import { post } from "@/lib/api";
+import { api, post, type Row } from "@/lib/api";
 import { Button, Field, Notice } from "./ui";
 import styles from "./AuthArtwork.module.css";
 export default function AuthPage({ register = false }: { register?: boolean }) {
@@ -17,10 +17,28 @@ export default function AuthPage({ register = false }: { register?: boolean }) {
   const [returnTo, setReturnTo] = useState("/dashboard");
   useEffect(() => {
     const next = new URLSearchParams(window.location.search).get("next") || "";
-    if (next === "/#contact" || /^\/orders(?:\?|$)/.test(next))
-      setReturnTo(next);
-    setHydrated(true);
-  }, []);
+    const target =
+      next === "/#contact" || /^\/orders(?:\?|$)/.test(next)
+        ? next
+        : "/dashboard";
+    setReturnTo(target);
+    let active = true;
+    api<Row>("/auth/me")
+      .then((user) => {
+        if (active)
+          router.replace(
+            target === "/dashboard" && user.role === "OWNER_ADMIN"
+              ? "/admin"
+              : target,
+          );
+      })
+      .catch(() => {
+        if (active) setHydrated(true);
+      });
+    return () => {
+      active = false;
+    };
+  }, [router]);
   const [busy, setBusy] = useState(false),
     [error, setError] = useState("");
   return (
@@ -72,12 +90,20 @@ export default function AuthPage({ register = false }: { register?: boolean }) {
               setError("");
               const f = new FormData(e.currentTarget);
               try {
-                await post(`/auth/${register ? "register" : "login"}`, {
-                  email: f.get("email"),
-                  password: f.get("password"),
-                  ...(register ? { name: f.get("name") } : {}),
-                });
-                router.push(returnTo);
+                const user = await post<Row>(
+                  `/auth/${register ? "register" : "login"}`,
+                  {
+                    email: f.get("email"),
+                    password: f.get("password"),
+                    remember_me: f.get("remember_me") === "on",
+                    ...(register ? { name: f.get("name") } : {}),
+                  },
+                );
+                router.push(
+                  returnTo === "/dashboard" && user.role === "OWNER_ADMIN"
+                    ? "/admin"
+                    : returnTo,
+                );
                 router.refresh();
               } catch (err) {
                 setError((err as Error).message);
@@ -123,6 +149,10 @@ export default function AuthPage({ register = false }: { register?: boolean }) {
                 placeholder="输入密码"
               />
             </Field>
+            <label className="check">
+              <input type="checkbox" name="remember_me" defaultChecked />
+              <span>记住登录（30天）</span>
+            </label>
             {register && (
               <label className="check">
                 <input type="checkbox" required />
@@ -134,7 +164,11 @@ export default function AuthPage({ register = false }: { register?: boolean }) {
             )}
             {error && <Notice tone="error">{error}</Notice>}
             <Button busy={busy} disabled={!hydrated} type="submit">
-              {register ? "创建工作区" : "登录工作区"}
+              {!hydrated
+                ? "正在检查登录状态…"
+                : register
+                  ? "创建工作区"
+                  : "登录工作区"}
               <ArrowRight size={17} />
             </Button>
           </form>

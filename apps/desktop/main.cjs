@@ -7,6 +7,9 @@ app.setName('CreatorOS');
 app.setAppUserModelId('com.creatoros.desktop');
 let window;
 let origin;
+let cookieStore;
+let flushingCookiesOnQuit = false;
+let quitAfterCookieFlush = false;
 const configFile = path.join(__dirname, 'runtime.json');
 let root = fs.existsSync(configFile) ? JSON.parse(fs.readFileSync(configFile, 'utf8')).projectRoot : path.resolve(__dirname, '../..');
 if (process.env.CREATOROS_DESKTOP_TEST === '1') {
@@ -28,6 +31,9 @@ else {
     try {
       if (!fs.existsSync(path.join(root, 'services', 'api', 'app', 'main.py'))) throw Error('项目目录已移动。请在新位置运行 scripts/install-desktop.ps1 重新建立入口。');
       session.defaultSession.setPermissionRequestHandler((_contents, _permission, callback) => callback(false));
+      cookieStore = session.defaultSession.cookies;
+      // Electron batches cookie writes; save login and logout changes immediately.
+      cookieStore.on('changed', () => { void flushCookies(); });
       window = new BrowserWindow({
         title:'CreatorOS · 爆款实验室', width:1440, height:960, minWidth:900, minHeight:650,
         backgroundColor:'#f7f9f4', icon:path.join(__dirname, 'assets', 'creatoros.ico'),
@@ -69,6 +75,9 @@ else {
 function safeExternal(value) {
   try { const url=new URL(value); return ['http:','https:'].includes(url.protocol)&&!url.username&&!url.password; } catch{return false;}
 }
+function flushCookies() {
+  return cookieStore.flushStore().catch(error => console.error('CreatorOS 登录状态保存失败：', error.message));
+}
 async function boot() {
   if (booting || !window) return;
   booting=true;
@@ -81,3 +90,13 @@ async function boot() {
   } finally { booting=false; }
 }
 app.on('window-all-closed',()=>app.quit());
+app.on('will-quit', event => {
+  if (!cookieStore || quitAfterCookieFlush) return;
+  event.preventDefault();
+  if (flushingCookiesOnQuit) return;
+  flushingCookiesOnQuit = true;
+  void flushCookies().then(() => {
+    quitAfterCookieFlush = true;
+    app.quit();
+  });
+});
